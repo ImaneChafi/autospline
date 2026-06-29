@@ -356,6 +356,32 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(ai_group)
 
+        # --- Geometric (no AI) ---
+        geo_group = QGroupBox("Geometric (no AI)")
+        gg_layout = QVBoxLayout(geo_group)
+
+        gg_layout.addWidget(QLabel("1. Shift+click ~6 points\n   roughly along the arch"))
+
+        gg_layout.addWidget(QLabel("Control points:"))
+        self._n_control_spin = QSpinBox()
+        self._n_control_spin.setRange(8, 40)
+        self._n_control_spin.setValue(24)
+        gg_layout.addWidget(self._n_control_spin)
+
+        btn_fit_clicks = QPushButton("2. Fit Arch from Clicks")
+        btn_fit_clicks.clicked.connect(self._fit_from_clicks)
+        gg_layout.addWidget(btn_fit_clicks)
+
+        btn_snap = QPushButton("Snap to Bright")
+        btn_snap.clicked.connect(self._snap_to_bright)
+        gg_layout.addWidget(btn_snap)
+
+        btn_auto = QPushButton("Auto-detect (rough)")
+        btn_auto.clicked.connect(self._auto_detect)
+        gg_layout.addWidget(btn_auto)
+
+        layout.addWidget(geo_group)
+
         # --- Edit group ---
         edit_group = QGroupBox("Edit")
         eg_layout = QVBoxLayout(edit_group)
@@ -553,11 +579,14 @@ class MainWindow(QMainWindow):
             else:
                 reply = QMessageBox.question(
                     self, "No Model",
-                    "No trained model loaded. Run detection with a simple heuristic instead?",
+                    "No trained model loaded.\n\n"
+                    "Try a rough automatic geometric detection instead?\n"
+                    "(For reliable results, use 'Fit Arch from Clicks' in the "
+                    "Geometric panel — Shift+click ~6 points first.)",
                     QMessageBox.Yes | QMessageBox.No,
                 )
                 if reply == QMessageBox.Yes:
-                    self._heuristic_detection()
+                    self._auto_detect()
                 return
 
         z_idx = self._slice_slider.value()
@@ -583,58 +612,72 @@ class MainWindow(QMainWindow):
         model = build_model(use_pretrained=False)
         self._predictor = ArchPredictor.from_checkpoint(path, model)
 
-    def _heuristic_detection(self) -> None:
-        """
-        Bone-intensity ridge detection as a fallback when no model is loaded.
+    # ------------------------------------------------------------------
+    # Geometric (no-AI) methods
+    # ------------------------------------------------------------------
 
-        Finds bright voxels (bone) in the axial slice and extracts the
-        dental arch skeleton via intensity thresholding + morphological ops.
-        """
-        import cv2
-        from skimage.morphology import skeletonize
-        from skimage.measure import label, regionprops
+    def _fit_from_clicks(self) -> None:
+        """Turn the current rough clicks into a smooth, evenly-spaced arch."""
+        from inference.geometric import assisted_arch_from_clicks
 
+        clicks = self.canvas.get_control_points()
+        if len(clicks) < 4:
+            QMessageBox.information(
+                self, "Need more points",
+                "Shift+click at least 4 points (≈6 recommended) roughly along "
+                "the arch first, then press 'Fit Arch from Clicks'.",
+            )
+            return
+        slc = (
+            extract_axial_slice(self._windowed_volume(), self._slice_slider.value())
+            if self._volume is not None else None
+        )
+        try:
+            control = assisted_arch_from_clicks(
+                clicks, n_control=self._n_control_spin.value(), slice_2d=slc
+            )
+            n_clicks = len(clicks)
+            self.canvas.set_control_points(control)
+            self._set_status(
+                f"Fitted arch: {len(control)} evenly-spaced control points "
+                f"from {n_clicks} clicks. Drag any point to refine."
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Fit Error", str(e))
+
+    def _snap_to_bright(self) -> None:
+        """Nudge each control point onto the nearest bright structure."""
+        from inference.geometric import snap_points_to_bright
+
+        pts = self.canvas.get_control_points()
+        if len(pts) == 0 or self._volume is None:
+            return
         z_idx = self._slice_slider.value()
         slc = extract_axial_slice(self._windowed_volume(), z_idx)
+        snapped = snap_points_to_bright(slc, pts, radius=6)
+        self.canvas.set_control_points(snapped)
+        self._set_status("Snapped control points to nearby bright tooth/bone.")
 
-        # Threshold bone (bright region in dental CBCT)
-        bone_mask = (slc > 0.6).astype(np.uint8)
+    def _auto_detect(self) -> None:
+        """Rough fully-automatic geometric guess (refine afterwards)."""
+        from inference.geometric import auto_detect_arch
 
-        # Morphological cleanup
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        bone_mask = cv2.morphologyEx(bone_mask, cv2.MORPH_CLOSE, kernel)
-        bone_mask = cv2.morphologyEx(bone_mask, cv2.MORPH_OPEN, kernel)
-
-        # Keep largest connected component
-        labeled = label(bone_mask)
-        if labeled.max() == 0:
-            self._set_status("Heuristic: no bone found at this slice.")
+        if self._volume is None:
+            QMessageBox.warning(self, "No CBCT", "Load a CBCT volume first.")
             return
-        props = regionprops(labeled)
-        largest = max(props, key=lambda p: p.area)
-        clean = (labeled == largest.label).astype(np.uint8)
-
-        # Skeletonize and sample N points along the skeleton
-        skel = skeletonize(clean)
-        skel_coords = np.argwhere(skel)  # (row, col)
-
-        if len(skel_coords) < 5:
-            self._set_status("Heuristic: skeleton too sparse at this slice.")
-            return
-
-        pts = skel_coords[:, ::-1].astype(np.float64)  # → (col, row)
-        ordered = order_points_along_arch(pts)
-
-        # Subsample to ~20 evenly-spaced points
-        n_pts = min(20, len(ordered))
-        indices = np.round(np.linspace(0, len(ordered) - 1, n_pts)).astype(int)
-        control_pts = ordered[indices]
-
-        self.canvas.set_control_points(control_pts)
-        self._set_status(
-            f"Heuristic detection: {n_pts} points. "
-            "Adjust manually or load a trained model for better results."
-        )
+        z_idx = self._slice_slider.value()
+        slc = extract_axial_slice(self._windowed_volume(), z_idx)
+        try:
+            control = auto_detect_arch(slc, n_control=self._n_control_spin.value())
+            self.canvas.set_control_points(control)
+            self._set_status(
+                f"Auto-detect: {len(control)} points (rough). Refine by dragging, "
+                "or use 'Fit Arch from Clicks' for a cleaner result."
+            )
+        except ValueError as e:
+            QMessageBox.information(self, "Auto-detect", str(e))
+        except Exception as e:
+            QMessageBox.critical(self, "Auto-detect Error", str(e))
 
     # ------------------------------------------------------------------
     # Editing helpers

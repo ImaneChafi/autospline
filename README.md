@@ -176,10 +176,35 @@ python3 scripts/annotate.py \
 | Move control point | Left-click + drag |
 | Delete control point | Right-click on point |
 | Re-order points | "Re-order Points" button |
-| Toggle heatmap overlay | Checkbox "Show heatmap overlay" |
 | Save annotation | Ctrl+S or "Save .fcsv" button |
 
-If no trained model is loaded, clicking "Detect Arch (AI)" falls back to a bone-threshold + skeletonisation heuristic — useful as a rough starting point.
+---
+
+## Annotating Without a Trained Model (Geometric Workflow)
+
+Before you have trained a model, use the **Geometric (no AI)** panel. The
+recommended, reliable workflow needs only a handful of clicks:
+
+1. Scroll to the slice you want to annotate.
+2. **Shift+click ~6 points** roughly along the arch (e.g. both rear molars and
+   a few points in between — they don't need to be precise).
+3. Click **"Fit Arch from Clicks"** → your clicks become a smooth, evenly-spaced
+   spline of N control points (set N with the spinbox, default 24).
+4. *(Optional)* Click **"Snap to Bright"** to nudge each point onto the nearest
+   tooth / cortical bone.
+5. Drag any individual point to fine-tune, then **Ctrl+S** to save.
+
+This works on every slice — including those with no clean tooth row — because
+*you* supply the anatomical prior with the clicks; the geometry just smooths and
+resamples them.
+
+There is also an **"Auto-detect (rough)"** button that tries fully-automatic
+blob detection with no clicks. It only works when a clean tooth row is present
+in the slice, and is meant purely as a draft to refine. For consistent results,
+prefer the click-assisted method above.
+
+The methods live in [`inference/geometric.py`](cbct_arch_spline/inference/geometric.py):
+`assisted_arch_from_clicks`, `snap_points_to_bright`, and `auto_detect_arch`.
 
 ---
 
