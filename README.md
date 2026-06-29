@@ -172,8 +172,8 @@ python3 scripts/annotate.py \
 | Load CBCT | File menu or "Load CBCT" button |
 | Scroll slices | Slider or ← / → arrow keys |
 | Run AI detection | "Detect Arch (AI)" button |
-| Add control point | Shift + left-click on image |
-| Move control point | Left-click + drag |
+| Add control point | Left-click on empty space (or Shift+click) |
+| Move control point | Left-click + drag a point |
 | Delete control point | Right-click on point |
 | Re-order points | "Re-order Points" button |
 | Save annotation | Ctrl+S or "Save .fcsv" button |
@@ -186,8 +186,9 @@ Before you have trained a model, use the **Geometric (no AI)** panel. The
 recommended, reliable workflow needs only a handful of clicks:
 
 1. Scroll to the slice you want to annotate.
-2. **Shift+click ~6 points** roughly along the arch (e.g. both rear molars and
-   a few points in between — they don't need to be precise).
+2. **Click ~6 points** roughly along the arch (e.g. both rear molars and a few
+   points in between — they don't need to be precise). Clicking empty space adds
+   a point; clicking an existing point lets you drag it.
 3. Click **"Fit Arch from Clicks"** → your clicks become a smooth, evenly-spaced
    spline of N control points (set N with the spinbox, default 24).
 4. *(Optional)* Click **"Snap to Bright"** to nudge each point onto the nearest

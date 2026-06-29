@@ -201,6 +201,15 @@ class SplineCanvas(FigureCanvas):
             return idx
         return None
 
+    def _shift_held(self) -> bool:
+        """
+        Reliable Shift detection via Qt, independent of matplotlib focus.
+
+        matplotlib's event.key is None during a click unless its canvas holds
+        keyboard focus, so we ask Qt for the live modifier state instead.
+        """
+        return bool(QApplication.keyboardModifiers() & Qt.ShiftModifier)
+
     def _on_press(self, event) -> None:
         if event.inaxes != self.ax or event.xdata is None:
             return
@@ -208,19 +217,22 @@ class SplineCanvas(FigureCanvas):
         x, y = event.xdata, event.ydata
 
         if event.button == 1:  # left click
-            if event.key == "shift":
-                # Add new point
+            idx = self._find_nearest_point(x, y)
+            # Add a point when Shift is held, or when the click is on empty
+            # space (not near an existing point). Otherwise start dragging.
+            if self._shift_held() or idx is None:
                 self._control_points.append([x, y])
-                self.status_callback(f"Added point at ({x:.1f}, {y:.1f}). Total: {len(self._control_points)}")
+                self.status_callback(
+                    f"Added point at ({x:.1f}, {y:.1f}). "
+                    f"Total: {len(self._control_points)}"
+                )
                 self._redraw()
             else:
-                idx = self._find_nearest_point(x, y)
-                if idx is not None:
-                    self._dragging_idx = idx
-                    self._drag_offset = (
-                        self._control_points[idx][0] - x,
-                        self._control_points[idx][1] - y,
-                    )
+                self._dragging_idx = idx
+                self._drag_offset = (
+                    self._control_points[idx][0] - x,
+                    self._control_points[idx][1] - y,
+                )
 
         elif event.button == 3:  # right click → delete point
             idx = self._find_nearest_point(x, y)
@@ -360,7 +372,7 @@ class MainWindow(QMainWindow):
         geo_group = QGroupBox("Geometric (no AI)")
         gg_layout = QVBoxLayout(geo_group)
 
-        gg_layout.addWidget(QLabel("1. Shift+click ~6 points\n   roughly along the arch"))
+        gg_layout.addWidget(QLabel("1. Click ~6 points roughly\n   along the arch"))
 
         gg_layout.addWidget(QLabel("Control points:"))
         self._n_control_spin = QSpinBox()
@@ -386,9 +398,9 @@ class MainWindow(QMainWindow):
         edit_group = QGroupBox("Edit")
         eg_layout = QVBoxLayout(edit_group)
 
-        eg_layout.addWidget(QLabel("Shift+click: add point"))
-        eg_layout.addWidget(QLabel("Right-click: delete point"))
-        eg_layout.addWidget(QLabel("Drag: move point"))
+        eg_layout.addWidget(QLabel("Click empty space: add point"))
+        eg_layout.addWidget(QLabel("Drag a point: move it"))
+        eg_layout.addWidget(QLabel("Right-click a point: delete"))
 
         btn_order = QPushButton("Re-order Points")
         btn_order.clicked.connect(self._reorder_points)
