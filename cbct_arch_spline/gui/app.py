@@ -277,12 +277,13 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
 
+        # Right: canvas (created first — control panel wires signals to it)
+        self.canvas = SplineCanvas(status_callback=self._set_status)
+
         # Left: controls
         ctrl_panel = self._build_control_panel()
         main_layout.addWidget(ctrl_panel, stretch=0)
 
-        # Right: canvas
-        self.canvas = SplineCanvas(status_callback=self._set_status)
         main_layout.addWidget(self.canvas, stretch=1)
 
     def _build_control_panel(self) -> QWidget:
