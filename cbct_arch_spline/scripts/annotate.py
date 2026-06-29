@@ -23,13 +23,12 @@ def main() -> None:
     args = p.parse_args()
 
     from PyQt5.QtWidgets import QApplication
-    import nibabel as nib
-    import numpy as np
 
     app = QApplication(sys.argv)
 
     from gui.app import MainWindow
     from config import MODELS_DIR
+    from data.preprocessing import load_volume
 
     window = MainWindow()
 
@@ -38,9 +37,7 @@ def main() -> None:
         cbct_path = Path(args.cbct)
         if cbct_path.exists():
             try:
-                img = nib.load(str(cbct_path))
-                window._volume = np.asarray(img.dataobj, dtype=np.float32)
-                window._affine = img.affine
+                window._volume, window._affine = load_volume(cbct_path)
                 window._nii_path = cbct_path
                 n = window._volume.shape[2]
                 window._slice_slider.setMaximum(n - 1)

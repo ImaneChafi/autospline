@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import ANNOTATIONS_DIR
 from data.dataset import CBCTArchDataset
-from data.preprocessing import load_nifti, window_hu, extract_axial_slice, z_lps_to_voxel_index
+from data.preprocessing import load_volume, window_hu, extract_axial_slice, z_lps_to_voxel_index
 from models.unet import build_model
 from inference.predictor import ArchPredictor, extract_keypoints_from_heatmap
 from spline.fcsv_io import load_fcsv, lps_to_voxel
@@ -37,15 +37,25 @@ def evaluate(args) -> dict:
     all_distances = []
     failed = 0
 
+    volume_exts = (".mha", ".mhd", ".nrrd", ".nii.gz", ".nii")
+
+    def find_volume(case_id: str) -> Path | None:
+        for d in (cbct_dir, cbct_dir / "imagesTr"):
+            for ext in volume_exts:
+                cand = d / f"{case_id}{ext}"
+                if cand.exists():
+                    return cand
+        return None
+
     for fcsv_path in fcsv_files:
         case_id = fcsv_path.stem
-        nii_path = cbct_dir / f"{case_id}.nii.gz"
-        if not nii_path.exists():
+        nii_path = find_volume(case_id)
+        if nii_path is None:
             continue
 
         try:
             ann = load_fcsv(fcsv_path)
-            volume, affine = load_nifti(nii_path)
+            volume, affine = load_volume(nii_path)
             volume = window_hu(volume)
 
             z_idx = z_lps_to_voxel_index(ann["z_lps"], affine, volume.shape)

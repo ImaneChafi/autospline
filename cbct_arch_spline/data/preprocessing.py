@@ -13,17 +13,88 @@ import cv2
 from config import HU_MIN, HU_MAX, IMAGE_SIZE
 
 
-def load_nifti(path: str | Path) -> tuple[npt.NDArray, npt.NDArray]:
+# File extensions handled by each backend
+NIFTI_EXTS = (".nii", ".nii.gz")
+ITK_EXTS = (".mha", ".mhd", ".nrrd")
+
+
+def _has_ext(path: Path, exts: tuple[str, ...]) -> bool:
+    name = path.name.lower()
+    return any(name.endswith(e) for e in exts)
+
+
+def load_volume(path: str | Path) -> tuple[npt.NDArray, npt.NDArray]:
     """
-    Load a NIfTI file.
+    Load a CBCT volume from NIfTI (.nii/.nii.gz) or ITK (.mha/.mhd/.nrrd).
 
     Returns:
-        volume: (X, Y, Z) float32 array in voxel HU values
-        affine: (4, 4) world-to-voxel affine matrix
+        volume: (X, Y, Z) float32 array, indexed as volume[i, j, k]
+        affine: (4, 4) voxel->RAS affine matrix
+
+    Both backends are normalised to the SAME conventions:
+      - array axis order is (i, j, k) matching the affine's index columns
+      - affine maps voxel index -> RAS world coordinates (mm)
+    so that all downstream LPS<->voxel math in fcsv_io works identically.
+    """
+    path = Path(path)
+    if _has_ext(path, NIFTI_EXTS):
+        return load_nifti(path)
+    if _has_ext(path, ITK_EXTS):
+        return load_itk(path)
+    raise ValueError(
+        f"Unsupported file type: {path.name}\n"
+        f"Supported: {NIFTI_EXTS + ITK_EXTS}"
+    )
+
+
+def load_nifti(path: str | Path) -> tuple[npt.NDArray, npt.NDArray]:
+    """
+    Load a NIfTI file (nibabel, RAS+ affine).
+
+    Returns:
+        volume: (X, Y, Z) float32 array indexed as volume[i, j, k]
+        affine: (4, 4) voxel->RAS affine matrix
     """
     img = nib.load(str(path))
     volume = np.asarray(img.dataobj, dtype=np.float32)
     affine = img.affine
+    return volume, affine
+
+
+def load_itk(path: str | Path) -> tuple[npt.NDArray, npt.NDArray]:
+    """
+    Load an ITK volume (.mha/.mhd/.nrrd) via SimpleITK.
+
+    SimpleITK works in LPS world coordinates and returns the array in
+    (k, j, i) order. We transpose to (i, j, k) and convert the LPS geometry
+    to a voxel->RAS affine, matching the NIfTI convention so the rest of the
+    pipeline is backend-agnostic.
+
+    Returns:
+        volume: (X, Y, Z) float32 array indexed as volume[i, j, k]
+        affine: (4, 4) voxel->RAS affine matrix
+    """
+    import SimpleITK as sitk
+
+    img = sitk.ReadImage(str(path))
+
+    # (k, j, i) -> (i, j, k)
+    arr = sitk.GetArrayFromImage(img)
+    volume = np.ascontiguousarray(arr.transpose(2, 1, 0)).astype(np.float32)
+
+    spacing = np.array(img.GetSpacing(), dtype=np.float64)        # (sx, sy, sz)
+    origin = np.array(img.GetOrigin(), dtype=np.float64)          # LPS mm
+    direction = np.array(img.GetDirection(), dtype=np.float64).reshape(3, 3)
+
+    # voxel index (i,j,k) -> LPS physical point: p = origin + (D @ diag(spacing)) @ index
+    affine_lps = np.eye(4, dtype=np.float64)
+    affine_lps[:3, :3] = direction @ np.diag(spacing)
+    affine_lps[:3, 3] = origin
+
+    # LPS -> RAS: flip x and y signs
+    ras_flip = np.diag([-1.0, -1.0, 1.0, 1.0])
+    affine = ras_flip @ affine_lps
+
     return volume, affine
 
 

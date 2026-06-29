@@ -19,7 +19,6 @@ from typing import Optional
 
 import numpy as np
 import numpy.typing as npt
-import nibabel as nib
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -46,7 +45,7 @@ from config import (
     HU_MIN, HU_MAX, IMAGE_SIZE,
 )
 from data.preprocessing import (
-    window_hu, extract_axial_slice, z_lps_to_voxel_index,
+    load_volume, window_hu, extract_axial_slice, z_lps_to_voxel_index,
 )
 from spline.fcsv_io import load_fcsv, save_fcsv, lps_to_voxel, voxel_to_lps
 from spline.spline_utils import fit_spline, order_points_along_arch
@@ -407,8 +406,11 @@ class MainWindow(QMainWindow):
 
     def _load_cbct(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open CBCT NIfTI", str(Path.home()),
-            "NIfTI files (*.nii.gz *.nii);;All files (*)"
+            self, "Open CBCT Volume", str(Path.home()),
+            "CBCT volumes (*.mha *.mhd *.nrrd *.nii.gz *.nii);;"
+            "ITK MetaImage (*.mha *.mhd *.nrrd);;"
+            "NIfTI files (*.nii.gz *.nii);;"
+            "All files (*)"
         )
         if not path:
             return
@@ -416,9 +418,7 @@ class MainWindow(QMainWindow):
         self._nii_path = Path(path)
         self._set_status(f"Loading {self._nii_path.name}…")
         try:
-            img = nib.load(str(self._nii_path))
-            self._volume = np.asarray(img.dataobj, dtype=np.float32)
-            self._affine = img.affine
+            self._volume, self._affine = load_volume(self._nii_path)
         except Exception as e:
             QMessageBox.critical(self, "Load Error", str(e))
             return

@@ -68,11 +68,29 @@ Requirements: Python ≥ 3.9, PyTorch ≥ 2.0, nibabel, PyQt5, timm, scikit-imag
 ## Data Format
 
 ### CBCT volumes
-NIfTI files (`.nii.gz`) named `{case_id}.nii.gz`.  
+Supported formats:
+- **ITK MetaImage** (`.mha`, `.mhd`, `.nrrd`) — e.g. the ToothFairy2 dataset, read via SimpleITK
+- **NIfTI** (`.nii`, `.nii.gz`) — read via nibabel
+
+Files are named `{case_id}.mha` (or `.nii.gz`). Both backends are normalised
+internally to the same conventions (voxel→RAS affine, `(i, j, k)` array order),
+so all downstream coordinate math is identical regardless of source format.
 Expected Hounsfield Unit range: −500 to +2000 (dental CBCT).
 
+The training/eval scripts look for volumes both directly in `--cbct_dir` and in
+a nested `imagesTr/` subfolder (nnU-Net / ToothFairy2 layout):
+
+```
+Dataset112_ToothFairy2/
+├── imagesTr/
+│   ├── ToothFairy2F_001_0000.mha
+│   └── ...
+└── labelsTr/
+```
+
 ### Annotations
-Slicer `.fcsv` fiducial files — one per case, same stem as the NIfTI file.
+Slicer `.fcsv` fiducial files — one per case, same stem as the volume file
+(`ToothFairy2F_001_0000.mha` ↔ `ToothFairy2F_001_0000.fcsv`).
 
 ```
 # CoordinateSystem = LPS

@@ -21,7 +21,7 @@ from config import (
 )
 from spline.fcsv_io import load_fcsv, lps_to_voxel
 from data.preprocessing import (
-    load_nifti,
+    load_volume,
     window_hu,
     extract_axial_slice,
     z_lps_to_voxel_index,
@@ -85,14 +85,28 @@ class CBCTArchDataset(Dataset):
                 "Ensure NIfTI files follow the naming pattern {{case_id}}.nii.gz"
             )
 
+    # Candidate volume extensions, in priority order
+    VOLUME_EXTS = (".mha", ".mhd", ".nrrd", ".nii.gz", ".nii")
+
+    def _find_volume_for_case(self, case_id: str) -> Path | None:
+        """
+        Locate the CBCT volume for a case id, searching the cbct_dir and a
+        nested imagesTr/ subfolder (nnU-Net / ToothFairy2 layout).
+        """
+        search_dirs = [self.cbct_dir, self.cbct_dir / "imagesTr"]
+        for d in search_dirs:
+            for ext in self.VOLUME_EXTS:
+                candidate = d / f"{case_id}{ext}"
+                if candidate.exists():
+                    return candidate
+        return None
+
     def _find_paired_samples(self) -> list[dict]:
         samples = []
         for fcsv_path in sorted(self.fcsv_dir.glob("*.fcsv")):
             case_id = fcsv_path.stem
-            nii_path = self.cbct_dir / f"{case_id}.nii.gz"
-            if not nii_path.exists():
-                nii_path = self.cbct_dir / f"{case_id}.nii"
-            if nii_path.exists():
+            nii_path = self._find_volume_for_case(case_id)
+            if nii_path is not None:
                 samples.append({"case_id": case_id, "nii": nii_path, "fcsv": fcsv_path})
         return samples
 
@@ -102,7 +116,7 @@ class CBCTArchDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         sample = self.samples[idx]
         annotation = load_fcsv(sample["fcsv"])
-        volume, affine = load_nifti(sample["nii"])
+        volume, affine = load_volume(sample["nii"])
         volume = window_hu(volume)
 
         z_idx = z_lps_to_voxel_index(annotation["z_lps"], affine, volume.shape)
