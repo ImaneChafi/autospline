@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QSlider, QLabel, QFileDialog, QStatusBar,
     QGroupBox, QSizePolicy, QMessageBox, QDoubleSpinBox, QSpinBox,
-    QCheckBox, QToolBar, QAction,
+    QCheckBox, QToolBar, QAction, QComboBox,
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QKeySequence
@@ -273,6 +273,7 @@ class MainWindow(QMainWindow):
         self._volume: Optional[npt.NDArray] = None
         self._affine: Optional[npt.NDArray] = None
         self._nii_path: Optional[Path] = None
+        self._label_path: Optional[Path] = None  # tooth/bone segmentation for DL model
         self._predictor = None  # loaded on demand
 
         self._build_ui()
@@ -367,6 +368,30 @@ class MainWindow(QMainWindow):
         ag_layout.addWidget(self._chk_heatmap)
 
         layout.addWidget(ai_group)
+
+        # --- DL Model (ArchSplineNet) ---
+        dl_group = QGroupBox("DL Model")
+        dl_layout = QVBoxLayout(dl_group)
+
+        dl_layout.addWidget(QLabel("Needs a tooth/bone label\nvolume (auto-found if named\nlike labelsTr/<case>.mha)"))
+
+        btn_load_label = QPushButton("Load Label (.mha)")
+        btn_load_label.clicked.connect(self._load_label)
+        dl_layout.addWidget(btn_load_label)
+        self._label_status = QLabel("Label: (auto)")
+        self._label_status.setWordWrap(True)
+        dl_layout.addWidget(self._label_status)
+
+        dl_layout.addWidget(QLabel("Jaw:"))
+        self._jaw_combo = QComboBox()
+        self._jaw_combo.addItems(["lower", "upper"])
+        dl_layout.addWidget(self._jaw_combo)
+
+        btn_dl = QPushButton("Detect Arch (DL model)")
+        btn_dl.clicked.connect(self._run_dl_detection)
+        dl_layout.addWidget(btn_dl)
+
+        layout.addWidget(dl_group)
 
         # --- Geometric (no AI) ---
         geo_group = QGroupBox("Geometric (no AI)")
@@ -468,6 +493,43 @@ class MainWindow(QMainWindow):
         self._on_slice_changed(mid)
         self._set_status(f"Loaded: {self._nii_path.name} — shape {self._volume.shape}")
 
+        # Try to auto-locate the matching tooth/bone label volume for the DL model
+        self._label_path = self._auto_find_label(self._nii_path)
+        if self._label_path is not None:
+            self._label_status.setText(f"Label: {self._label_path.name} (auto)")
+        else:
+            self._label_status.setText("Label: not found — use 'Load Label'")
+
+    @staticmethod
+    def _auto_find_label(cbct_path: Path) -> Optional[Path]:
+        """
+        Locate the segmentation matching a CBCT using the ToothFairy2/nnU-Net
+        convention: imagesTr/<case>_0000.mha  ->  labelsTr/<case>.mha
+        (the trailing channel suffix _0000 is dropped and imagesTr -> labelsTr).
+        """
+        stem = cbct_path.name
+        for ext in (".nii.gz", ".mha", ".mhd", ".nrrd", ".nii"):
+            if stem.endswith(ext):
+                base = stem[: -len(ext)]
+                break
+        else:
+            base, ext = cbct_path.stem, cbct_path.suffix
+        case = base[:-5] if base.endswith("_0000") else base  # drop channel suffix
+
+        candidates = []
+        # sibling labelsTr directory
+        if cbct_path.parent.name == "imagesTr":
+            labels_dir = cbct_path.parent.parent / "labelsTr"
+            candidates += [labels_dir / f"{case}{e}" for e in
+                           (".mha", ".nii.gz", ".mhd", ".nrrd", ".nii")]
+        # same directory, without the _0000 suffix
+        candidates += [cbct_path.parent / f"{case}{e}" for e in
+                       (".mha", ".nii.gz", ".mhd", ".nrrd", ".nii")]
+        for c in candidates:
+            if c.exists():
+                return c
+        return None
+
     def _load_fcsv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Open .fcsv annotation", str(Path.home()),
@@ -475,9 +537,16 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        self._load_fcsv_from_path(Path(path))
 
+    def _load_fcsv_from_path(self, path: Path) -> None:
+        """Load control points from a .fcsv file onto the canvas.
+
+        Shared by the "Load Annotation" button, CLI pre-loading, and the DL
+        predictor (which writes its result as a .fcsv in the same LPS format).
+        """
         try:
-            ann = load_fcsv(path)
+            ann = load_fcsv(str(path))
         except Exception as e:
             QMessageBox.critical(self, "Load Error", str(e))
             return
@@ -490,14 +559,12 @@ class MainWindow(QMainWindow):
         z_idx = z_lps_to_voxel_index(ann["z_lps"], self._affine, self._volume.shape)
         self._slice_slider.setValue(z_idx)
 
-        # Convert LPS → voxel → pixel on the axial slice
-        pts_vox = lps_to_voxel(ann["points_lps"], self._affine)
-        slc = extract_axial_slice(self._windowed_volume(), z_idx)
-        # col = voxel axis 0 scaled to slice width; row = voxel axis 1 scaled to height
+        # Convert LPS → voxel → pixel on the axial slice.
         # After .T in extract_axial_slice: image row = voxel Y, image col = voxel X
+        pts_vox = lps_to_voxel(ann["points_lps"], self._affine)
         pts_px = pts_vox[:, :2]  # (col=X, row=Y)
         self.canvas.set_control_points(pts_px)
-        self._set_status(f"Loaded {len(pts_px)} control points from {Path(path).name}")
+        self._set_status(f"Loaded {len(pts_px)} control points from {path.name}")
 
     def _save_annotation(self) -> None:
         if self._nii_path is None and self._volume is None:
@@ -623,6 +690,80 @@ class MainWindow(QMainWindow):
         from inference.predictor import ArchPredictor
         model = build_model(use_pretrained=False)
         self._predictor = ArchPredictor.from_checkpoint(path, model)
+
+    # ------------------------------------------------------------------
+    # DL model (ArchSplineNet) — the dl/ package
+    # ------------------------------------------------------------------
+
+    def _load_label(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open tooth/bone label volume", str(Path.home()),
+            "Label volumes (*.mha *.mhd *.nrrd *.nii.gz *.nii);;All files (*)"
+        )
+        if not path:
+            return
+        self._label_path = Path(path)
+        self._label_status.setText(f"Label: {self._label_path.name}")
+        self._set_status(f"Label set: {self._label_path.name}")
+
+    def _run_dl_detection(self) -> None:
+        """Run the ArchSplineNet DL model → writes a .fcsv → loads it on canvas."""
+        if self._nii_path is None:
+            QMessageBox.warning(self, "No CBCT", "Load a CBCT volume first.")
+            return
+        if self._label_path is None or not self._label_path.exists():
+            QMessageBox.warning(
+                self, "No Label",
+                "The DL model needs a matching tooth/bone label volume.\n"
+                "Click 'Load Label' to select it (e.g. labelsTr/<case>.mha).",
+            )
+            return
+
+        dl_dir = Path(__file__).parent.parent / "dl"
+        checkpoint = dl_dir / "final_model.pt"
+        pipeline = dl_dir / "drr_pipeline_v4.py"
+        if not checkpoint.exists():
+            QMessageBox.critical(
+                self, "Model missing",
+                f"DL checkpoint not found:\n{checkpoint}",
+            )
+            return
+
+        self._set_status("Running DL model… (first run downloads ResNet weights)")
+        QApplication.processEvents()
+
+        try:
+            # The dl package uses bare imports (from prepare_case import ...),
+            # so its directory must be importable.
+            if str(dl_dir) not in sys.path:
+                sys.path.insert(0, str(dl_dir))
+            from dl.dl_arch_predictor import predict_arch_to_fcsv
+
+            out_fcsv = Path(
+                os.path.join(
+                    os.environ.get("TMPDIR", "/tmp"), "dl_prediction.fcsv"
+                )
+            )
+            predict_arch_to_fcsv(
+                cbct_path=str(self._nii_path),
+                label_path=str(self._label_path),
+                checkpoint_path=str(checkpoint),
+                jaw=self._jaw_combo.currentText(),
+                out_fcsv_path=str(out_fcsv),
+                pipeline_path=str(pipeline),
+                use_pretrained=True,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "DL Detection Error", f"{type(e).__name__}: {e}")
+            return
+
+        # Reuse the existing fcsv loader — same LPS format as manual annotations
+        self._load_fcsv_from_path(out_fcsv)
+        jaw = self._jaw_combo.currentText()
+        note = " (upper-jaw: preliminary — few training cases)" if jaw == "upper" else ""
+        self._set_status(
+            f"DL model ({jaw} jaw) prediction loaded{note}. Drag points to refine."
+        )
 
     # ------------------------------------------------------------------
     # Geometric (no-AI) methods

@@ -209,6 +209,56 @@ The methods live in [`inference/geometric.py`](cbct_arch_spline/inference/geomet
 
 ---
 
+## DL Model (ArchSplineNet)
+
+A second, fully-trained deep-learning method lives in
+[`cbct_arch_spline/dl/`](cbct_arch_spline/dl/) and is exposed in the GUI's
+**"DL Model"** panel. Unlike the heatmap U-Net, it predicts the whole arch in
+one shot from a 2D maximum-intensity projection (MIP) of the jaw plus its
+tooth/bone segmentation.
+
+**How it works.** For the chosen jaw it takes a z-range MIP of the CBCT, the
+matching label MIP, and a rendered geometric-baseline arch as a 3-channel image,
+runs a ResNet-18 encoder conditioned on the jaw, and regresses a *bounded
+residual correction* to a geometric baseline arch (output = baseline +
+`tanh(delta) * 60px`), so predictions stay near a plausible curve. The result is
+written as a Slicer `.fcsv` in the same LPS format as the manual annotations and
+loaded back through the GUI's normal annotation loader.
+
+**Usage in the GUI:**
+1. Load a CBCT. The matching label volume is auto-found via the ToothFairy2
+   convention (`imagesTr/<case>_0000.mha` → `labelsTr/<case>.mha`); otherwise
+   click **"Load Label"**.
+2. Pick the **jaw** (lower / upper).
+3. Click **"Detect Arch (DL model)"**. (First run downloads ResNet-18 ImageNet
+   weights, ~45 MB, once.)
+4. Refine the predicted points by dragging, then **Ctrl+S**.
+
+**Standalone CLI** (useful for testing before the GUI):
+```bash
+python3 cbct_arch_spline/dl/dl_arch_predictor.py \
+    --cbct  imagesTr/ToothFairy2F_001_0000.mha \
+    --label labelsTr/ToothFairy2F_001.mha \
+    --checkpoint cbct_arch_spline/dl/final_model.pt \
+    --jaw lower --use_pretrained \
+    --pipeline_path cbct_arch_spline/dl/drr_pipeline_v4.py \
+    --out_fcsv prediction.fcsv
+```
+
+**Caveats:**
+- **Lower jaw is reliable; upper jaw is preliminary** — the model was trained on
+  155 lower-jaw vs only 6 upper-jaw cases.
+- The production checkpoint `final_model.pt` uses a ResNet-18 backbone, so it
+  must be run with `use_pretrained=True` (the GUI does this automatically).
+- **Input normalisation:** the stand-alone hand-off code fed the MIP channel in
+  raw Hounsfield units, which saturated the network and collapsed every
+  prediction into an off-canvas loop. The integrated version windows the MIP to
+  `[0, 1]` (`HU_WINDOW = (-1000, 2000)` in `dl_arch_predictor.py`) before the
+  network, which restores correct arches. If you have the original training
+  dataloader, confirm this matches its exact normalisation.
+
+---
+
 ## Model Architecture
 
 **EfficientNet-B3 U-Net** (default when `timm` is installed):
