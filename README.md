@@ -4,6 +4,13 @@ AI-assisted tool for detecting and annotating dental arch splines on CBCT (Cone 
 
 Inspired by margin line detection on 3D meshes, adapted for 2D CBCT imaging. A U-Net predicts a heatmap of control point locations; the user can then refine the result interactively in a GUI annotator.
 
+## GUI feature pipeline
+
+![CBCT arch annotator GUI pipeline](docs/gui_pipeline.png)
+
+Load a CBCT, detect the arch by one of three methods (AI, assisted, or automatic
+geometric), refine the control points, then export a Slicer `.fcsv`.
+
 ---
 
 ## Overview

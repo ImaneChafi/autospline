@@ -1,0 +1,69 @@
+<svg width="680" height="476" viewBox="0 0 680 476" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>CBCT dental arch annotator — GUI feature pipeline</title>
+<desc>Workflow: load a CBCT, detect the arch spline by one of three methods (AI, assisted, or automatic geometric), refine the control points, then export a Slicer fcsv.</desc>
+<defs>
+<marker id="ah" markerWidth="8" markerHeight="8" refX="5" refY="4" orient="auto">
+<path d="M1,1 L5,4 L1,7" fill="none" stroke="#5F5E5A" stroke-width="1.3"/>
+</marker>
+<style>
+text{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+.th{font-size:14px;font-weight:500}
+.ts{font-size:12px;font-weight:400;fill:#5F5E5A}
+.arr{stroke:#5F5E5A;stroke-width:1.5;fill:none}
+</style>
+</defs>
+
+<rect x="240" y="28" width="200" height="156" rx="12" fill="#2C2C2A"/>
+<path d="M256,162 C258,114 271,68 301,52 C326,40 354,40 379,52 C409,68 422,114 424,162" fill="none" stroke="#45443F" stroke-width="11" stroke-linecap="round"/>
+<path d="M256,162 C258,114 271,68 301,52 C326,40 354,40 379,52 C409,68 422,114 424,162" fill="none" stroke="#F19A7D" stroke-width="2.5" stroke-linecap="round"/>
+<g fill="#F7C6B8">
+<circle cx="256" cy="162" r="3.6"/><circle cx="264" cy="122" r="3.6"/><circle cx="274" cy="88" r="3.6"/><circle cx="300" cy="58" r="3.6"/><circle cx="340" cy="47" r="3.6"/><circle cx="380" cy="58" r="3.6"/><circle cx="408" cy="88" r="3.6"/><circle cx="416" cy="122" r="3.6"/><circle cx="424" cy="162" r="3.6"/>
+</g>
+<text x="340" y="202" text-anchor="middle" class="ts">arch spline + control points on a CBCT slice</text>
+
+<rect x="42" y="228" width="134" height="64" rx="10" fill="#F1EFE8" stroke="#5F5E5A"/>
+<text x="109" y="256" text-anchor="middle" class="th" fill="#444441">load CBCT</text>
+<text x="109" y="274" text-anchor="middle" class="ts">.mha · .nii</text>
+
+<rect x="196" y="228" width="134" height="64" rx="10" fill="#F1EFE8" stroke="#5F5E5A"/>
+<text x="263" y="256" text-anchor="middle" class="th" fill="#444441">detect arch</text>
+<text x="263" y="274" text-anchor="middle" class="ts">3 methods</text>
+
+<rect x="350" y="228" width="134" height="64" rx="10" fill="#F1EFE8" stroke="#5F5E5A"/>
+<text x="417" y="256" text-anchor="middle" class="th" fill="#444441">refine points</text>
+<text x="417" y="274" text-anchor="middle" class="ts">drag to move</text>
+
+<rect x="504" y="228" width="134" height="64" rx="10" fill="#F1EFE8" stroke="#5F5E5A"/>
+<text x="571" y="256" text-anchor="middle" class="th" fill="#444441">export</text>
+<text x="571" y="274" text-anchor="middle" class="ts">.fcsv (Slicer)</text>
+
+<line x1="178" y1="260" x2="192" y2="260" class="arr" marker-end="url(#ah)"/>
+<line x1="332" y1="260" x2="346" y2="260" class="arr" marker-end="url(#ah)"/>
+<line x1="486" y1="260" x2="500" y2="260" class="arr" marker-end="url(#ah)"/>
+
+<line x1="263" y1="292" x2="263" y2="318" class="arr" marker-end="url(#ah)"/>
+<path d="M140,320 H386" fill="none" stroke="#5F5E5A" stroke-width="1.5"/>
+<line x1="140" y1="320" x2="140" y2="344" class="arr" marker-end="url(#ah)"/>
+<line x1="263" y1="320" x2="263" y2="344" class="arr" marker-end="url(#ah)"/>
+<line x1="386" y1="320" x2="386" y2="344" class="arr" marker-end="url(#ah)"/>
+
+<rect x="40" y="346" width="200" height="80" rx="10" fill="#EEEDFE" stroke="#534AB7"/>
+<text x="140" y="372" text-anchor="middle" class="th" fill="#3C3489">AI detection</text>
+<text x="140" y="391" text-anchor="middle" class="ts" fill="#534AB7">ArchSplineNet (DL)</text>
+<text x="140" y="408" text-anchor="middle" class="ts" fill="#534AB7">needs label · auto on load</text>
+
+<rect x="264" y="346" width="152" height="80" rx="10" fill="#E1F5EE" stroke="#0F6E56"/>
+<text x="340" y="372" text-anchor="middle" class="th" fill="#085041">assisted</text>
+<text x="340" y="391" text-anchor="middle" class="ts" fill="#0F6E56">click ~6 points</text>
+<text x="340" y="408" text-anchor="middle" class="ts" fill="#0F6E56">fit + snap to bright</text>
+
+<rect x="440" y="346" width="152" height="80" rx="10" fill="#E1F5EE" stroke="#0F6E56"/>
+<text x="516" y="372" text-anchor="middle" class="th" fill="#085041">auto-detect</text>
+<text x="516" y="391" text-anchor="middle" class="ts" fill="#0F6E56">rough · no clicks</text>
+<text x="516" y="408" text-anchor="middle" class="ts" fill="#0F6E56">bright-blob fit</text>
+
+<rect x="214" y="448" width="13" height="13" rx="3" fill="#EEEDFE" stroke="#534AB7"/>
+<text x="233" y="458" class="ts">AI method</text>
+<rect x="330" y="448" width="13" height="13" rx="3" fill="#E1F5EE" stroke="#0F6E56"/>
+<text x="349" y="458" class="ts">geometric (no AI)</text>
+</svg>

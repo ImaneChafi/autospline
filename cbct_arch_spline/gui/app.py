@@ -351,47 +351,37 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(nav_group)
 
-        # --- AI Detection ---
+        # --- AI Detection (ArchSplineNet DL model) ---
         ai_group = QGroupBox("AI Detection")
-        ag_layout = QVBoxLayout(ai_group)
+        ai_layout = QVBoxLayout(ai_group)
 
-        btn_load_model = QPushButton("Load Model (.pth)")
-        btn_load_model.clicked.connect(self._load_model)
-        ag_layout.addWidget(btn_load_model)
-
-        btn_detect = QPushButton("Detect Arch (AI)")
-        btn_detect.clicked.connect(self._run_detection)
-        ag_layout.addWidget(btn_detect)
-
-        self._chk_heatmap = QCheckBox("Show heatmap overlay")
-        self._chk_heatmap.toggled.connect(self.canvas.toggle_heatmap)
-        ag_layout.addWidget(self._chk_heatmap)
-
-        layout.addWidget(ai_group)
-
-        # --- DL Model (ArchSplineNet) ---
-        dl_group = QGroupBox("DL Model")
-        dl_layout = QVBoxLayout(dl_group)
-
-        dl_layout.addWidget(QLabel("Needs a tooth/bone label\nvolume (auto-found if named\nlike labelsTr/<case>.mha)"))
+        ai_layout.addWidget(QLabel("Needs a tooth/bone label\nvolume (auto-found if named\nlike labelsTr/<case>.mha)"))
 
         btn_load_label = QPushButton("Load Label (.mha)")
         btn_load_label.clicked.connect(self._load_label)
-        dl_layout.addWidget(btn_load_label)
+        ai_layout.addWidget(btn_load_label)
         self._label_status = QLabel("Label: (auto)")
         self._label_status.setWordWrap(True)
-        dl_layout.addWidget(self._label_status)
+        ai_layout.addWidget(self._label_status)
 
-        dl_layout.addWidget(QLabel("Jaw:"))
+        ai_layout.addWidget(QLabel("Jaw:"))
         self._jaw_combo = QComboBox()
         self._jaw_combo.addItems(["lower", "upper"])
-        dl_layout.addWidget(self._jaw_combo)
+        ai_layout.addWidget(self._jaw_combo)
 
-        btn_dl = QPushButton("Detect Arch (DL model)")
+        btn_dl = QPushButton("Detect Arch (AI)")
         btn_dl.clicked.connect(self._run_dl_detection)
-        dl_layout.addWidget(btn_dl)
+        ai_layout.addWidget(btn_dl)
 
-        layout.addWidget(dl_group)
+        self._chk_autodetect = QCheckBox("Auto-detect on load")
+        self._chk_autodetect.setChecked(True)
+        self._chk_autodetect.setToolTip(
+            "Run the AI model automatically after loading a CBCT,\n"
+            "when a matching label volume is found."
+        )
+        ai_layout.addWidget(self._chk_autodetect)
+
+        layout.addWidget(ai_group)
 
         # --- Geometric (no AI) ---
         geo_group = QGroupBox("Geometric (no AI)")
@@ -460,7 +450,7 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
 
         act_detect = QAction("Detect (AI)", self)
-        act_detect.triggered.connect(self._run_detection)
+        act_detect.triggered.connect(self._run_dl_detection)
         tb.addAction(act_detect)
 
     # ------------------------------------------------------------------
@@ -497,6 +487,9 @@ class MainWindow(QMainWindow):
         self._label_path = self._auto_find_label(self._nii_path)
         if self._label_path is not None:
             self._label_status.setText(f"Label: {self._label_path.name} (auto)")
+            # Automatically run AI detection when enabled and a label was found
+            if self._chk_autodetect.isChecked():
+                self._run_dl_detection()
         else:
             self._label_status.setText("Label: not found — use 'Load Label'")
 
