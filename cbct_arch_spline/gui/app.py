@@ -532,11 +532,15 @@ class MainWindow(QMainWindow):
             return
         self._load_fcsv_from_path(Path(path))
 
-    def _load_fcsv_from_path(self, path: Path) -> None:
+    def _load_fcsv_from_path(self, path: Path, keep_slice: bool = False) -> None:
         """Load control points from a .fcsv file onto the canvas.
 
         Shared by the "Load Annotation" button, CLI pre-loading, and the DL
         predictor (which writes its result as a .fcsv in the same LPS format).
+
+        keep_slice: if True, stay on the current slice instead of scrolling to
+        the file's stored Z. The DL model writes the jaw midpoint as Z, but its
+        arch curve is valid across all jaw slices, so we keep the user's view.
         """
         try:
             ann = load_fcsv(str(path))
@@ -548,9 +552,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No CBCT", "Please load a CBCT volume first.")
             return
 
-        # Navigate to annotated z slice
-        z_idx = z_lps_to_voxel_index(ann["z_lps"], self._affine, self._volume.shape)
-        self._slice_slider.setValue(z_idx)
+        # Navigate to the annotated z slice (unless asked to keep the current one)
+        if not keep_slice:
+            z_idx = z_lps_to_voxel_index(ann["z_lps"], self._affine, self._volume.shape)
+            self._slice_slider.setValue(z_idx)
 
         # Convert LPS → voxel → pixel on the axial slice.
         # After .T in extract_axial_slice: image row = voxel Y, image col = voxel X
@@ -722,7 +727,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self._set_status("Running DL model… (first run downloads ResNet weights)")
+        self._set_status("Running AI model (HeatmapNet)…")
         QApplication.processEvents()
 
         try:
@@ -744,14 +749,15 @@ class MainWindow(QMainWindow):
                 jaw=self._jaw_combo.currentText(),
                 out_fcsv_path=str(out_fcsv),
                 pipeline_path=str(pipeline),
-                use_pretrained=True,
             )
         except Exception as e:
-            QMessageBox.critical(self, "DL Detection Error", f"{type(e).__name__}: {e}")
+            QMessageBox.critical(self, "AI Detection Error", f"{type(e).__name__}: {e}")
             return
 
-        # Reuse the existing fcsv loader — same LPS format as manual annotations
-        self._load_fcsv_from_path(out_fcsv)
+        # Reuse the existing fcsv loader — same LPS format as manual annotations.
+        # keep_slice=True: the model's arch is valid across all jaw slices, so we
+        # stay on the user's current view rather than jumping to the stored Z.
+        self._load_fcsv_from_path(out_fcsv, keep_slice=True)
         jaw = self._jaw_combo.currentText()
         note = " (upper-jaw: preliminary — few training cases)" if jaw == "upper" else ""
         self._set_status(
