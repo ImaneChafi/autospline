@@ -49,7 +49,7 @@ text{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 
 <rect x="40" y="346" width="200" height="80" rx="10" fill="#EEEDFE" stroke="#534AB7"/>
 <text x="140" y="372" text-anchor="middle" class="th" fill="#3C3489">AI detection</text>
-<text x="140" y="391" text-anchor="middle" class="ts" fill="#534AB7">ArchSplineNet (DL)</text>
+<text x="140" y="391" text-anchor="middle" class="ts" fill="#534AB7">HeatmapNet (DL)</text>
 <text x="140" y="408" text-anchor="middle" class="ts" fill="#534AB7">needs label · auto on load</text>
 
 <rect x="264" y="346" width="152" height="80" rx="10" fill="#E1F5EE" stroke="#0F6E56"/>
