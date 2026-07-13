@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QSlider, QLabel, QFileDialog, QStatusBar,
     QGroupBox, QSizePolicy, QMessageBox, QDoubleSpinBox, QSpinBox,
-    QCheckBox, QToolBar, QAction, QComboBox,
+    QCheckBox, QToolBar, QAction, QComboBox, QScrollArea,
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QKeySequence
@@ -259,6 +259,49 @@ class SplineCanvas(FigureCanvas):
 
 
 # ---------------------------------------------------------------------------
+# Panoramic view canvas (read-only image on the right)
+# ---------------------------------------------------------------------------
+
+
+class PanoCanvas(FigureCanvas):
+    """Simple read-only canvas that displays a synthesized panoramic image."""
+
+    def __init__(self, parent=None):
+        self.fig = Figure(figsize=(6, 4), facecolor="black")
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_facecolor("black")
+        self.fig.tight_layout(pad=0)
+        super().__init__(self.fig)
+        self.setParent(parent)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._image: Optional[npt.NDArray] = None
+        self._show_placeholder("Panoramic view\n\nGenerate from the current spline\n(‹ Panoramic panel)")
+
+    def _show_placeholder(self, text: str) -> None:
+        self.ax.clear()
+        self.ax.set_facecolor("black")
+        self.ax.axis("off")
+        self.ax.text(
+            0.5, 0.5, text, color="#888", fontsize=11, ha="center", va="center",
+            transform=self.ax.transAxes,
+        )
+        self.draw_idle()
+
+    def set_image(self, px: npt.NDArray) -> None:
+        self._image = px
+        self.ax.clear()
+        self.ax.set_facecolor("black")
+        self.ax.axis("off")
+        # aspect='equal' keeps the panoramic's true proportions (a wide strip),
+        # rather than stretching it to fill the tall right column.
+        self.ax.imshow(px, cmap="gray", aspect="equal")
+        self.draw_idle()
+
+    def get_image(self) -> Optional[npt.NDArray]:
+        return self._image
+
+
+# ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
 
@@ -267,7 +310,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(WINDOW_TITLE)
-        self.resize(1200, 850)
+        # Small minimum so the window fits any screen; sensible default size.
+        self.setMinimumSize(720, 480)
+        self.resize(1150, 720)
 
         # State
         self._volume: Optional[npt.NDArray] = None
@@ -289,14 +334,26 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
 
-        # Right: canvas (created first — control panel wires signals to it)
+        # Middle: interactive spline canvas (created first — controls wire to it)
         self.canvas = SplineCanvas(status_callback=self._set_status)
+        # Right: read-only panoramic view
+        self.pano_canvas = PanoCanvas()
+        # Let the image panes shrink so the window can be made small.
+        self.canvas.setMinimumSize(220, 220)
+        self.pano_canvas.setMinimumSize(180, 140)
 
-        # Left: controls
+        # Left: controls, wrapped in a scroll area so a short window can still
+        # reach every panel (e.g. the Panoramic buttons at the bottom).
         ctrl_panel = self._build_control_panel()
-        main_layout.addWidget(ctrl_panel, stretch=0)
+        ctrl_scroll = QScrollArea()
+        ctrl_scroll.setWidgetResizable(True)
+        ctrl_scroll.setWidget(ctrl_panel)
+        ctrl_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        ctrl_scroll.setFixedWidth(238)  # panel (220) + room for the scrollbar
+        main_layout.addWidget(ctrl_scroll, stretch=0)
 
         main_layout.addWidget(self.canvas, stretch=1)
+        main_layout.addWidget(self.pano_canvas, stretch=1)
 
     def _build_control_panel(self) -> QWidget:
         panel = QWidget()
@@ -426,6 +483,21 @@ class MainWindow(QMainWindow):
         eg_layout.addWidget(btn_clear)
 
         layout.addWidget(edit_group)
+
+        # --- Panoramic ---
+        pano_group = QGroupBox("Panoramic")
+        pg_layout = QVBoxLayout(pano_group)
+        pg_layout.addWidget(QLabel("Reslice the volume along\nthe current spline →"))
+
+        btn_pano = QPushButton("Generate Panoramic")
+        btn_pano.clicked.connect(self._generate_panoramic)
+        pg_layout.addWidget(btn_pano)
+
+        btn_save_pano = QPushButton("Save Panoramic (.png)")
+        btn_save_pano.clicked.connect(self._save_panoramic)
+        pg_layout.addWidget(btn_save_pano)
+
+        layout.addWidget(pano_group)
 
         # --- Info ---
         self._info_label = QLabel("")
@@ -596,6 +668,75 @@ class MainWindow(QMainWindow):
         case_id = Path(path).stem
         save_fcsv(path, pts_lps, z_lps, case_id)
         self._set_status(f"Saved {len(pts_lps)} points to {Path(path).name}")
+
+    # ------------------------------------------------------------------
+    # Panoramic (spline → panoramic reconstruction)
+    # ------------------------------------------------------------------
+
+    def _generate_panoramic(self) -> None:
+        """Reslice the CBCT along the current spline to build a panoramic view."""
+        if self._volume is None or self._affine is None:
+            QMessageBox.warning(self, "No CBCT", "Load a CBCT volume first.")
+            return
+
+        pts_px = self.canvas.get_control_points()  # (N, 2) as (col=X, row=Y)
+        if len(pts_px) < 4:
+            QMessageBox.information(
+                self, "Need a spline",
+                "Draw or detect an arch spline first (at least 4 control points), "
+                "then generate the panoramic view.",
+            )
+            return
+
+        self._set_status("Generating panoramic view… (this takes a few seconds)")
+        QApplication.processEvents()
+
+        try:
+            # ROI_targeting/alter_version.py uses bare imports, so add its dir.
+            roi_dir = Path(__file__).parent.parent / "ROI_targeting"
+            if str(roi_dir) not in sys.path:
+                sys.path.insert(0, str(roi_dir))
+            import alter_version as av
+
+            # The pipeline works in (Z, Y, X) order and raw HU; our volume is
+            # (X, Y, Z), so transpose back. Control points are already axial
+            # voxel indices (x=col, y=row) → coords='pixel'.
+            vol_zyx = np.ascontiguousarray(self._volume.transpose(2, 1, 0))
+            z_spacing = float(np.linalg.norm(self._affine[:3, 2]))
+
+            tck = av.manual_arch_tck(pts_px, coords="pixel")
+            px, _roi, _tck = av.synthesize_panoramic_from_volume_manual(
+                vol_zyx, z_spacing, tck, show=False
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Panoramic Error", f"{type(e).__name__}: {e}")
+            self._set_status("Panoramic generation failed.")
+            return
+
+        self.pano_canvas.set_image(px)
+        self._set_status(
+            f"Panoramic generated ({px.shape[1]}×{px.shape[0]} px). "
+            "Edit the spline and regenerate to update it."
+        )
+
+    def _save_panoramic(self) -> None:
+        px = self.pano_canvas.get_image()
+        if px is None:
+            QMessageBox.information(self, "No panoramic", "Generate a panoramic view first.")
+            return
+        default = (self._nii_path.stem if self._nii_path else "panoramic") + "_pano.png"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save panoramic", str(Path.home() / default), "PNG image (*.png)"
+        )
+        if not path:
+            return
+        try:
+            import matplotlib.image as mpimg
+            mpimg.imsave(path, px, cmap="gray")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", str(e))
+            return
+        self._set_status(f"Saved panoramic to {Path(path).name}")
 
     # ------------------------------------------------------------------
     # Slice navigation
