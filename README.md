@@ -183,6 +183,7 @@ python3 scripts/annotate.py \
 | Move control point | Left-click + drag a point |
 | Delete control point | Right-click on point |
 | Re-order points | "Re-order Points" button |
+| Generate panoramic | "Generate Panoramic" button (Panoramic panel) |
 | Save annotation | Ctrl+S or "Save .fcsv" button |
 
 ---
@@ -268,6 +269,28 @@ python3 cbct_arch_spline/dl/dl_arch_predictor.py \
 - The model works on the **whole jaw volume**, not a single slice — its arch is
   valid across all jaw slices, so the GUI keeps your current slice when loading
   the prediction (`keep_slice=True`).
+
+---
+
+## Panoramic Reconstruction (spline → panoramic)
+
+The GUI's **Panoramic** panel turns the current arch spline into a panoramic
+(OPG-style) radiograph. The spline defines the dental arch curve; the volume is
+resliced along that curve — casting curved rays through a focal trough — to
+"unroll" the jaw into a single flat wide image.
+
+The GUI shows three columns: the **controls** (left), the **axial slice with the
+editable spline** (middle), and the **generated panoramic** (right). Edit the
+spline (drag points, re-detect, etc.) and click **Generate Panoramic** again to
+update the view; **Save Panoramic (.png)** exports it.
+
+The reconstruction is done by
+[`ROI_targeting/alter_version.py`](cbct_arch_spline/ROI_targeting/alter_version.py)
+— specifically `manual_arch_tck()` (builds a spline `tck` from the control
+points) and `synthesize_panoramic_from_volume_manual()` (curved-ray render). The
+GUI feeds it the volume in `(Z, Y, X)` order and the control points as axial
+voxel indices (`coords='pixel'`); the vertical (z) extent of the trough is found
+automatically. Generation takes a few seconds per view.
 
 ---
 
