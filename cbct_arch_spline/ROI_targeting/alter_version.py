@@ -1,3 +1,48 @@
+"""
+CBCT -> synthetic panoramic radiograph (PX), fully automatic ("geometric" method).
+
+Given a dental CBCT volume, this detects the dental arch straight from the image and
+renders a panoramic radiograph by casting rays through a focal trough that follows the
+arch -- no manual arch tracing and no segmentation labels required.
+
+Pipeline (all automatic; see each function's docstring for detail)
+------------------------------------------------------------------
+    load volume (SimpleITK)
+      -> find_coronal_roi          jaw Z-extent from the enamel band (field-of-view- and
+                                   bite-robust; edentulous air-anchor fallback).
+      -> find_arch_footprint       dental-arch footprint in the axial plane, from the
+                                   bone-window mean projection (MeIP). Two robustness paths:
+                                     * detached bone fragments (e.g. a ramus split off by a
+                                       missing tooth) are RECONNECTED to the main arch
+                                       rather than discarded (_connect_arch_fragments), so
+                                       the panoramic is not truncated on that side;
+                                     * whole-skull / closed-bite scans whose bone window
+                                       blobs out fall back to an enamel-only arch
+                                       (_enamel_arch_mask).
+      -> smooth_arch_footprint
+         + find_dental_arch        medial skeleton -> pruned centreline -> smoothing
+                                   B-spline, continued past each ramus toward the condyles
+                                   (posterior_extend_mm).
+      -> synthesize_panoramic_from_volume
+                                   ray-cast the focal trough along the arch spline -> PX.
+
+Run it
+------
+Edit the CONFIG block under `if __name__ == "__main__"` at the bottom of this file
+(INPUT may be a single CBCT file OR a whole folder) and run:
+
+    python alter_version.py
+
+As shipped, that block batch-renders the ToothFairy2 CBCTs into test_PX_output -- the
+exact configuration used to produce the sample panoramics. Full notes are in the
+HOW TO LAUNCH section at the very bottom.
+
+Two alternative arch sources -- a manually traced spline (manual_arch_tck) and a
+deep-learning prediction (ml_arch_tck) -- are also provided as library functions with
+their own synthesize_panoramic_* helpers, but are not wired into the runner, which is
+geometric-only.
+"""
+
 import os
 from typing import Union
 from collections import deque
@@ -22,6 +67,10 @@ from skimage.morphology import binary_closing as _binary_closing, disk as _disk
 test_mha_file = ""   # e.g. r"C:\data\ToothFairy2F_001_0000.mha"
 test_nii_file = ""   # e.g. r"C:\data\scan.nii"
 
+
+# ============================================================================
+# Volume I/O and intensity projections
+# ============================================================================
 def load_np_mha(mha_link):
     """Returns  a numpy array from a mha file from the mha file link. The array is in the shape of (z, y, x),
     where z is the number of slices (axial), y is antero-posterior, and x is for left and right.
@@ -100,6 +149,12 @@ def flip_volume_sagittal(volume: np.ndarray) -> np.ndarray:
     """
     return np.flip(volume, axis=(0, 1)).copy()
 
+
+# ============================================================================
+# Geometric dental-arch detection (the automatic method)
+#   find_coronal_roi -> find_arch_footprint -> smooth_arch_footprint
+#     -> find_dental_arch  =>  arch B-spline used to render the panoramic
+# ============================================================================
 def _localize_jaws_edentulous(volume, meip_coronal, z_spacing_mm, cortical_s,
                               air_hu, open_max_mm, sup_margin_mm, inf_margin_mm, show,
                               jaw_half_mm=45.0):
@@ -629,7 +684,7 @@ def segment_mandible_3d(volume, roi, bone_min=500, min_patch_size=50, show=True)
 
 
 def _enamel_arch_mask(sub_volume, z_spacing_mm, enamel_hu=1800, enamel_hu_max=5000,
-                      frac=0.06, close_mm=4.0):
+                      frac=0.06, close_mm=4.0, max_close_mm=12.0, min_capture=0.90):
     """
     Arch footprint from the enamel signal alone, for whole-skull / closed-bite scans
     where the bone window fills the whole facial cross-section.
@@ -638,22 +693,94 @@ def _enamel_arch_mask(sub_volume, z_spacing_mm, enamel_hu=1800, enamel_hu_max=50
     teeth light up (facial bone does not reach the enamel band). The teeth project as
     a dotted arch, so a morphological closing (radius close_mm) bridges the
     inter-tooth gaps into one connected curve before the largest component is kept.
+
+    Missing teeth open gaps the base radius cannot bridge, and the arch then breaks
+    into pieces of which `keep largest` may pick the wrong one — on an edentulous jaw
+    with a dense restoration the metal blob outweighs the real tooth arc.  So the
+    radius is grown (up to max_close_mm) while it keeps recovering enamel, until the
+    largest component captures `min_capture` of the thresholded enamel pixels.  Growth
+    stops as soon as a larger radius yields no further gain, which leaves arches that
+    are already connected at close_mm untouched, and never inflates a mask whose
+    missing piece is simply too far away to bridge.
     """
     band = ((sub_volume > enamel_hu) & (sub_volume < enamel_hu_max)).mean(axis=0)
     if band.max() <= 0:
         return np.zeros(band.shape, dtype=bool)
-    mask = band > frac * band.max()
-    r = max(2, int(round(close_mm / z_spacing_mm)))
-    mask = _binary_closing(mask, _disk(r))
-    lbl = scipy.ndimage.label(mask)[0]      # type: ignore[index]
+    seed = band > frac * band.max()
+    n_seed = int(seed.sum())
+    if n_seed == 0:
+        return seed
+
+    def _largest(close_r_mm):
+        r = max(2, int(round(close_r_mm / z_spacing_mm)))
+        closed = _binary_closing(seed, _disk(r))
+        lbl = scipy.ndimage.label(closed)[0]      # type: ignore[index]
+        sizes = np.bincount(lbl.ravel()); sizes[0] = 0
+        if sizes.max() == 0:
+            return closed, 0.0
+        big = lbl == int(np.argmax(sizes))
+        return big, float((seed & big).sum()) / n_seed
+
+    mask, capture = _largest(close_mm)
+    cm = close_mm
+    while capture < min_capture and cm + 2.0 <= max_close_mm:
+        cand, cand_capture = _largest(cm + 2.0)
+        if cand_capture <= capture + 1e-3:   # no further enamel recovered — stop
+            break
+        cm, mask, capture = cm + 2.0, cand, cand_capture
+    return mask
+
+
+def _connect_arch_fragments(mask2d, bridge_gap_px, min_patch_size):
+    """
+    Reconnect detached bone fragments to the main arch instead of discarding them.
+
+    A missing tooth or a thin cortical break can split a ramus (or a run of teeth) off
+    as its own connected component; a plain keep-largest would then drop it and truncate
+    that side of the arch. Starting from the largest component, any other surviving
+    component whose nearest pixel lies within `bridge_gap_px` of the growing mask is
+    merged in and joined to it by a short drawn bridge, so the arch stays one traversable
+    curve. The gap cap leaves genuinely separate structures (cervical spine, hyoid) — which
+    sit much farther from the arch — out. Iterated, so a chain of fragments can attach in
+    sequence. Returns the connected mask (a single component).
+    """
+    lbl, n = scipy.ndimage.label(mask2d)  # type: ignore[misc]
+    if n <= 1:
+        return mask2d
     sizes = np.bincount(lbl.ravel()); sizes[0] = 0
-    if sizes.max() == 0:
-        return mask
-    return lbl == int(np.argmax(sizes))
+    main = int(np.argmax(sizes))
+    merged = lbl == main
+    others = [c for c in range(1, n + 1) if c != main and sizes[c] >= min_patch_size]
+
+    H, W = merged.shape
+    changed = True
+    while changed and others:
+        changed = False
+        dist, (iy, ix) = scipy.ndimage.distance_transform_edt(  # type: ignore[misc]
+            ~merged, return_indices=True)
+        for c in list(others):
+            comp = np.argwhere(lbl == c)
+            d = dist[comp[:, 0], comp[:, 1]]
+            k = int(np.argmin(d))
+            if d[k] > bridge_gap_px:
+                continue
+            py, px = int(comp[k, 0]), int(comp[k, 1])     # nearest fragment pixel
+            qy, qx = int(iy[py, px]), int(ix[py, px])     # nearest pixel on the main mask
+            merged |= (lbl == c)
+            # Draw a short thick bridge so the fragment and the arch become one component.
+            steps = int(max(abs(qy - py), abs(qx - px))) + 1
+            ry = np.linspace(py, qy, steps).round().astype(int)
+            rx = np.linspace(px, qx, steps).round().astype(int)
+            for yy, xx in zip(ry, rx):
+                merged[max(0, yy - 2):min(H, yy + 3), max(0, xx - 2):min(W, xx + 3)] = True
+            others.remove(c)
+            changed = True
+    return merged
 
 
 def find_arch_footprint(volume, roi, bone_min=200, bone_max=800, threshold_fraction=0.15,
-                        min_patch_size=200, blob_extent=0.55, show=True):
+                        min_patch_size=200, blob_extent=0.55, blob_area_frac=0.30,
+                        bridge_gap_mm=18.0, show=True):
     """
     Projects the coronal ROI along Z (mean intensity) to reveal the dental arch
     footprint in the (Y, X) plane.
@@ -662,11 +789,17 @@ def find_arch_footprint(volume, roi, bone_min=200, bone_max=800, threshold_fract
     plates), so its mean value is high.  The palate is a thin plate spanning only a
     few slices, so its mean value is lower.  Thresholding the MeIP separates them.
 
-    On a jaw-cropped scan this gives a clean curved arch.  On a whole-skull scan the
-    bone window fills the entire facial cross-section, so the "arch" comes back as a
-    solid blob filling its bounding box.  When that happens (mask extent within its
-    bounding box > blob_extent) the footprint is recomputed from the enamel signal
-    (`_enamel_arch_mask`), which isolates the teeth from the surrounding facial bone.
+    On a jaw-cropped scan this gives a clean curved arch.  On a whole-skull scan, or
+    on a scan whose soft tissue sits high enough in HU to survive the bone window,
+    the mask instead swallows the whole head cross-section.  Two independent tests
+    catch that and recompute the footprint from the enamel signal
+    (`_enamel_arch_mask`), which isolates the teeth from the surrounding facial bone:
+
+      * bounding-box fill > blob_extent — a solid facial-bone blob.
+      * mask area / head-silhouette area > blob_area_frac — an over-inclusive mask
+        that wraps the head.  Such a mask is a C-shaped ring, so it keeps a LOW
+        bounding-box fill (~0.3) and the blob_extent test alone never sees it; a
+        true arch is a thin ribbon covering at most ~26% of the head cross-section.
 
     Parameters
     ----------
@@ -677,6 +810,11 @@ def find_arch_footprint(volume, roi, bone_min=200, bone_max=800, threshold_fract
     min_patch_size     : 2D connected components smaller than this (pixels) are removed
     blob_extent        : bounding-box fill ratio above which the bone-window mask is
                          treated as a whole-skull blob and the enamel fallback is used
+    blob_area_frac     : mask-area / head-area ratio above which the mask is treated
+                         as over-inclusive and the enamel fallback is used
+    bridge_gap_mm      : detached bone fragments (e.g. a ramus split off by a missing
+                         tooth) within this distance of the main arch are reconnected to
+                         it rather than discarded; farther structures (spine) stay out
     show               : display the MeIP and the arch mask
 
     Returns
@@ -711,18 +849,29 @@ def find_arch_footprint(volume, roi, bone_min=200, bone_max=800, threshold_fract
     sizes[0] = 0
     mask2d = sizes[lbl] >= min_patch_size
 
-    # Keep only the single largest component
-    lbl   = scipy.ndimage.label(mask2d)[0]  # type: ignore[index]
-    sizes = np.bincount(lbl.ravel())
-    sizes[0] = 0
-    mask2d = lbl == int(np.argmax(sizes))
+    # Reconnect detached bone fragments to the main arch instead of discarding them.
+    # A missing tooth or a thin cortical break can split a ramus off as its own
+    # component; a plain keep-largest would drop it and truncate that side of the
+    # panoramic. Bridge in any fragment within bridge_gap_mm of the main component
+    # (structures that are genuinely separate — spine, hyoid — sit farther away and
+    # stay out), then keep whatever ended up connected.
+    bridge_gap_px = bridge_gap_mm / roi.get('z_spacing_mm', 0.3)
+    mask2d = _connect_arch_fragments(mask2d, bridge_gap_px, min_patch_size)
+    mask2d = keep_largest_component(mask2d)
 
-    # Blob guard: a true arch is a thin curve that fills little of its bounding box;
-    # a whole-skull bone blob fills most of it. Fall back to the enamel-only arch.
+    # Blob guard: a true arch is a thin curve that fills little of its bounding box
+    # and covers only a small part of the head; a whole-skull bone blob fills most of
+    # its bounding box, and an over-inclusive mask (soft tissue surviving the bone
+    # window on a high-HU scan) wraps the head as a C-shaped ring — low bounding-box
+    # fill, but a large share of the head area. Either → fall back to enamel-only.
     ys, xs = np.where(mask2d)
     if ys.size:
         bbox_area = (ys.max() - ys.min() + 1) * (xs.max() - xs.min() + 1)
-        if mask2d.sum() / bbox_area > blob_extent:
+        head = volume[z_top:z_bottom + 1].mean(axis=0) > -300
+        head = scipy.ndimage.binary_fill_holes(
+            scipy.ndimage.binary_closing(head, np.ones((7, 7), bool)))
+        area_frac = mask2d.sum() / max(int(np.sum(head)), 1)
+        if (mask2d.sum() / bbox_area > blob_extent) or (area_frac > blob_area_frac):
             mask2d = _enamel_arch_mask(
                 volume[z_top:z_bottom + 1], roi.get('z_spacing_mm', 0.3),
                 roi.get('enamel_hu', 1800), roi.get('enamel_hu_max', 5000))
@@ -1947,7 +2096,7 @@ def _smooth_arch_adaptive(mask):
 
 def synthesize_panoramic_from_volume(volume, z_spacing_mm,
                                      n_depth=200, trough_depth_mm=14.0,
-                                     posterior_extend_mm=22.0,
+                                     posterior_extend_mm=45.0,
                                      sup_margin_mm=38.0, inf_margin_mm=16.0,
                                      anterior_boost=1.0, anterior_sigma=0.28,
                                      posterior_boost=1.0, posterior_sigma=0.20,
@@ -2703,49 +2852,46 @@ def ml_arch_tck(cbct_path, label_path, jaw='lower',
 
 if __name__ == "__main__":
     # =====================================================================
-    #  CONFIG  --  edit everything here, then run:  python alter_version.py
+    #  GEOMETRIC PANORAMIC RUNNER  --  edit this block, then run:
+    #      python alter_version.py
     # ---------------------------------------------------------------------
-    #  Pick a spline METHOD, set the paths, tune the knobs.  A full how-to
-    #  for each method is in the USAGE notes at the very bottom of this file.
+    #  Fully automatic.  The dental-arch spline is detected straight from the
+    #  CBCT (enamel-band ROI -> arch footprint -> skeleton -> B-spline), so no
+    #  manual tracing and no segmentation label are needed: just point INPUT at
+    #  a CBCT scan -- OR at a whole folder of scans -- and run.  A full how-to
+    #  is in the HOW TO LAUNCH notes at the very bottom of this file.
     # =====================================================================
 
-    # --- which arch-spline source to use ---------------------------------
-    #   'geometric' : detect the dental arch automatically from the CBCT
-    #                 (no extra inputs -- the usual starting point)
-    #   'manual'    : use a hand-drawn arch spline from a .fcsv / .csv file
-    #   'ml'        : predict the arch with the deep-learning model
-    #                 (needs PyTorch + a matching tooth/bone LABEL file)
-    METHOD = 'geometric'
-
     # --- input / output --------------------------------------------------
-    # One run handles any .mha / .nii / .nrrd CBCT: the slice spacing is read
-    # automatically and the focal-trough depth, posterior extension and image
-    # proportions all adapt to it (see synthesize_panoramic_from_volume).
-    INPUT_FILE  = r"...\scan.nii"     # CBCT volume (.mha / .nii / .nrrd)
-    OUTPUT_DIR  = r"...\output"       # folder for the result (created if missing)
-    OUTPUT_NAME = "px_panoramic.png"  # output file name
+    # INPUT may be EITHER a single CBCT volume (.mha / .nii / .nrrd) OR a
+    # folder of them:
+    #     * single file -> renders ONE panoramic to OUTPUT_DIR
+    #     * folder      -> loops over every scan matching PATTERN (batch)
+    # Slice spacing is read from each file automatically, and the focal-trough
+    # depth, posterior extension and image proportions all adapt to it.
+    INPUT      = r"C:\Users\cotyl\OneDrive\Desktop\Projet recalage 2D3D\results_CBCT\ToothFairy2"
+    OUTPUT_DIR = r"C:\Users\cotyl\OneDrive\Desktop\Projet recalage 2D3D\test_PX_output"
+    PATTERN    = "*_0000.mha"   # folder mode only: which files are the CBCTs
+                               # (ToothFairy2 CBCTs end in _0000.mha; the plain
+                               #  *.mha files next to them are the labels -- skip)
 
-    # Set FLIP = True when the mandible appears at the TOP of the volume (the
-    # .nii exports from MCSTU usually need this; leave False for ToothFairy .mha).
-    # switch. The 'ml' method is trained apex-up -- keep FLIP = False for it.
-    # Flips the entire CBCT volume along the sagittal axis
+    # Set FLIP = True when the mandible appears at the TOP of the volume (MCSTU
+    # .nii exports usually need it). ToothFairy2 .mha scans are already
+    # mandible-down, so leave it False for them.  Flips the whole volume along
+    # the sagittal axis.
     FLIP = False
 
-    JAW = 'lower'                     # 'lower' or 'upper' (used by 'ml')
+    # Save the arch / focal-trough diagnostic overlay (<stem>_overlay.png)
+    # next to each panoramic (<stem>_PX.png).
+    OVERLAY = False
 
-    # --- 'manual' method inputs (ignored by the other methods) -----------
-    MANUAL_CSV    = r"...\arch.fcsv"  # hand-drawn arch markup (3D Slicer .fcsv / .csv)
-    MANUAL_COORDS = 'physical_mm'     # 'physical_mm' (Slicer LPS) or 'pixel'
-
-    # --- 'ml' method inputs (ignored by the other methods) ---------------
-    LABEL_FILE    = r"...\scan_label.mha"  # matching tooth/bone segmentation label, the file WITHOUT 0000 in its name
-    HU_WINDOW     = (-500.0, 2000.0)       # HU window mapped to [0,1] for the model
-    SPLINE_SMOOTH = 0.5                    # arch B-spline smoothing budget (px^2)
-
-    # --- render knobs (shared by every method) ---------------------------
+    # --- render knobs (tuned defaults) -----------------------------------
+    # Any parameter of synthesize_panoramic_from_volume can be added here.
     RENDER = dict(
         trough_depth_mm=14.0,      # bucco-lingual focal-trough depth (sharp layer)
-        posterior_extend_mm=22.0,  # how far the arch runs past the last molar (mm)
+        posterior_extend_mm=45.0,  # how far the arch runs past the last molar toward
+                                   # the condyle (mm); ~45 reaches the condyles at
+                                   # 0.3 mm spacing. Lower it if the ends overshoot.
         sup_margin_mm=38.0,        # render extent above the arch (mm)
         inf_margin_mm=16.0,        # render extent below the arch (mm)
         render_scale=3.0,          # >1 superimposes the mid-face beyond the trough
@@ -2758,78 +2904,60 @@ if __name__ == "__main__":
     # The deeper geometric thresholds (bone_min / bone_max / threshold_fraction,
     # enamel HU) are NOT here -- they live inside find_coronal_roi and
     # find_arch_footprint; edit them there only if the automatic arch detection
-    # misses.  Every render parameter accepted by synthesize_panoramic_from_volume
-    # can also be added to the RENDER dict above.
+    # misses.
     # =====================================================================
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # The 'ml' method reads the CBCT + label itself and returns the arch spline.
-    tck = None
-    if METHOD == 'ml':
-        tck = ml_arch_tck(INPUT_FILE, LABEL_FILE, jaw=JAW,
-                          hu_window=HU_WINDOW, spline_smooth=SPLINE_SMOOTH)
-
-    img = sitk.ReadImage(INPUT_FILE)
-    z_spacing_mm = img.GetSpacing()[2]         # axial slice thickness (mm)
-    volume = sitk.GetArrayFromImage(img)
-    if FLIP:
-        volume = flip_volume_sagittal(volume)
-
-    if METHOD == 'geometric':
+    if os.path.isdir(INPUT):
+        # Folder -> batch loop. Resumable (skips scans already rendered) and
+        # robust (a per-file failure is logged and the loop continues).
+        batch_process(INPUT, OUTPUT_DIR, pattern=PATTERN, flip=FLIP,
+                      overlay=OVERLAY, **RENDER)
+    else:
+        # Single CBCT -> one panoramic.
+        img = sitk.ReadImage(INPUT)
+        z_spacing_mm = img.GetSpacing()[2]           # axial slice thickness (mm)
+        volume = sitk.GetArrayFromImage(img)
+        if FLIP:
+            volume = flip_volume_sagittal(volume)
         panoramic, roi, tck = synthesize_panoramic_from_volume(
             volume, z_spacing_mm, **RENDER)
-    elif METHOD == 'manual':
-        panoramic, roi, tck = synthesize_panoramic_pipeline(
-            volume, z_spacing_mm, automatic=False,
-            spline_csv=MANUAL_CSV, spline_coords=MANUAL_COORDS,
-            image=img, flip=FLIP, **RENDER)
-    elif METHOD == 'ml':
-        panoramic, roi, tck = synthesize_panoramic_from_volume_manual(
-            volume, z_spacing_mm, tck, **RENDER)
-    else:
-        raise ValueError(f"unknown METHOD {METHOD!r} (use 'geometric', 'manual' or 'ml')")
-
-    out_path = os.path.join(OUTPUT_DIR, OUTPUT_NAME)
-    plt.imsave(out_path, panoramic, cmap='gray', vmin=0, vmax=255)
-    print("saved:", out_path)
+        stem = os.path.splitext(os.path.basename(INPUT))[0]
+        out_path = os.path.join(OUTPUT_DIR, stem + "_PX.png")
+        plt.imsave(out_path, panoramic, cmap='gray', vmin=0, vmax=255)
+        if OVERLAY:
+            save_focal_overlay(volume, z_spacing_mm, roi, tck,
+                               os.path.join(OUTPUT_DIR, stem + "_overlay.png"))
+        print("saved:", out_path)
 
     # =====================================================================
-    #  USAGE  --  how to run each of the three arch-spline methods
+    #  HOW TO LAUNCH  --  geometric method (fully automatic)
     # =====================================================================
     #
-    #  Edit the CONFIG block above, then run:  python alter_version.py
-    #  It loads INPUT_FILE, builds the dental-arch spline with the chosen
-    #  METHOD, renders the panoramic and writes it to OUTPUT_DIR/OUTPUT_NAME.
-    #  All three methods share the same RENDER knobs and produce the same
-    #  kind of image; they differ only in where the arch curve comes from.
+    #  1. Edit the CONFIG block above:
+    #        INPUT       = a single CBCT file  OR  a folder of CBCTs
+    #        OUTPUT_DIR  = where the PNGs are written (created if missing)
+    #        FLIP        = True only if the mandible is at the TOP of the scan
+    #        PATTERN     = glob for folder mode (default "*_0000.mha")
     #
-    #  1) GEOMETRIC   METHOD = 'geometric'   (fully automatic, no extra inputs)
-    #     ---------------------------------------------------------------
-    #     The arch is detected straight from the CBCT (enamel-band ROI ->
-    #     footprint -> skeleton).  Just set INPUT_FILE, OUTPUT_DIR and FLIP.
-    #     This is the recommended default and needs nothing beyond the scan.
+    #  2. Run it:
+    #        python alter_version.py
     #
-    #  2) MANUAL      METHOD = 'manual'      (you draw the arch)
-    #     ---------------------------------------------------------------
-    #     Trace the arch as markup points in 3D Slicer (or any tool) and
-    #     export them to a .fcsv / .csv, then set:
-    #        MANUAL_CSV     = that file
-    #        MANUAL_COORDS  = 'physical_mm'  for Slicer .fcsv (LPS millimetres)
-    #                         'pixel'        if the points are already in voxels
-    #     A Catmull-Rom spline is fitted through the points and used as the
-    #     arch; the automatic detection is skipped.  Keep FLIP consistent with
-    #     the orientation the points were drawn in (see the flip note above).
+    #  3. Output (per scan <stem>):
+    #        <stem>_PX.png       the synthetic panoramic (PX)
+    #        <stem>_overlay.png  arch + focal-trough diagnostic (if OVERLAY)
     #
-    #  3) PURE ML     METHOD = 'ml'          (deep-learning arch prediction)
-    #     ---------------------------------------------------------------
-    #     Requires PyTorch and the model shipped in
-    #     'autospline/Deep_learning model' (final_model.pt), PLUS a matching
-    #     tooth/bone segmentation LABEL for the scan (the model builds its
-    #     input channels from it).  In ToothFairy2 the CBCT is the *_0000.mha
-    #     file and the label is the same id without the _0000 suffix.  Set:
-    #        INPUT_FILE  = the CBCT           LABEL_FILE = the label
-    #        JAW         = 'lower' (reliable) or 'upper' (preliminary)
-    #        HU_WINDOW / SPLINE_SMOOTH = model input window / arch smoothing
-    #     The model is trained apex-up, so keep FLIP = False for this method.
+    #  What happens under the hood (all automatic, no inputs beyond the CBCT):
+    #     find_coronal_roi  -> jaw Z-extent from the enamel band
+    #     find_arch_footprint -> dental-arch footprint in the axial plane
+    #                            (falls back to the enamel-only arch on
+    #                             whole-skull / closed-bite scans)
+    #     smooth_arch_footprint + find_dental_arch -> the arch B-spline
+    #     synthesize_panoramic_from_volume -> the panoramic render
+    #  synthesize_panoramic_from_volume ties these together, so a single call
+    #  turns a volume into a PX; batch_process just loops it over a folder.
+    #
+    #  To render ONE scan instead of a folder, set INPUT to that .mha / .nii
+    #  file -- the runner detects a file vs. a folder automatically.
     # =====================================================================
