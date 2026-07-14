@@ -2096,7 +2096,7 @@ def _smooth_arch_adaptive(mask):
 
 def synthesize_panoramic_from_volume(volume, z_spacing_mm,
                                      n_depth=200, trough_depth_mm=14.0,
-                                     posterior_extend_mm=45.0,
+                                     posterior_extend_mm=40.0,
                                      sup_margin_mm=38.0, inf_margin_mm=16.0,
                                      anterior_boost=1.0, anterior_sigma=0.28,
                                      posterior_boost=1.0, posterior_sigma=0.20,
@@ -2889,9 +2889,10 @@ if __name__ == "__main__":
     # Any parameter of synthesize_panoramic_from_volume can be added here.
     RENDER = dict(
         trough_depth_mm=14.0,      # bucco-lingual focal-trough depth (sharp layer)
-        posterior_extend_mm=45.0,  # how far the arch runs past the last molar toward
-                                   # the condyle (mm); ~45 reaches the condyles at
-                                   # 0.3 mm spacing. Lower it if the ends overshoot.
+        posterior_extend_mm=40.0,  # how far the arch runs past the last molar toward
+                                   # the condyle (mm); ~40 reaches the condyles at
+                                   # 0.3 mm spacing with less overshoot than 45. Lower
+                                   # further if the ends still run into air.
         sup_margin_mm=38.0,        # render extent above the arch (mm)
         inf_margin_mm=16.0,        # render extent below the arch (mm)
         render_scale=3.0,          # >1 superimposes the mid-face beyond the trough
