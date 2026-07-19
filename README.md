@@ -207,13 +207,17 @@ This works on every slice — including those with no clean tooth row — becaus
 *you* supply the anatomical prior with the clicks; the geometry just smooths and
 resamples them.
 
-There is also an **"Auto-detect (rough)"** button that tries fully-automatic
-blob detection with no clicks. It only works when a clean tooth row is present
-in the slice, and is meant purely as a draft to refine. For consistent results,
-prefer the click-assisted method above.
+There is also an **"Auto-detect Arch (geometric)"** button for a fully-automatic
+result with **no clicks and no label**. It runs the image-based arch detector in
+[`ROI_targeting/altered_geometric_version.py`](cbct_arch_spline/ROI_targeting/altered_geometric_version.py):
+it finds the jaw's coronal ROI from the enamel band, extracts the dental-arch
+footprint from the bone-window mean projection, skeletonises it to a centreline,
+and fits a smoothing B-spline — then resamples that spline to control points on
+the canvas. Drag to refine, then **Generate Panoramic**.
 
-The methods live in [`inference/geometric.py`](cbct_arch_spline/inference/geometric.py):
-`assisted_arch_from_clicks`, `snap_points_to_bright`, and `auto_detect_arch`.
+The click-assisted helpers live in
+[`inference/geometric.py`](cbct_arch_spline/inference/geometric.py):
+`assisted_arch_from_clicks`, `snap_points_to_bright`.
 
 ---
 

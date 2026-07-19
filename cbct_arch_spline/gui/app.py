@@ -48,7 +48,7 @@ from data.preprocessing import (
     load_volume, window_hu, extract_axial_slice, z_lps_to_voxel_index,
 )
 from spline.fcsv_io import load_fcsv, save_fcsv, lps_to_voxel, voxel_to_lps
-from spline.spline_utils import fit_spline, order_points_along_arch
+from spline.spline_utils import fit_spline, order_points_along_arch, resample_spline_to_n_points
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +460,7 @@ class MainWindow(QMainWindow):
         btn_snap.clicked.connect(self._snap_to_bright)
         gg_layout.addWidget(btn_snap)
 
-        btn_auto = QPushButton("Auto-detect (rough)")
+        btn_auto = QPushButton("Auto-detect Arch (geometric)")
         btn_auto.clicked.connect(self._auto_detect)
         gg_layout.addWidget(btn_auto)
 
@@ -952,25 +952,55 @@ class MainWindow(QMainWindow):
         self._set_status("Snapped control points to nearby bright tooth/bone.")
 
     def _auto_detect(self) -> None:
-        """Rough fully-automatic geometric guess (refine afterwards)."""
-        from inference.geometric import auto_detect_arch
-
-        if self._volume is None:
+        """
+        Fully-automatic geometric arch detection (no clicks, no label) using
+        ROI_targeting/altered_geometric_version.py — detects the dental arch
+        directly from the CBCT bone/enamel projection and fits an arch spline.
+        """
+        if self._volume is None or self._affine is None:
             QMessageBox.warning(self, "No CBCT", "Load a CBCT volume first.")
             return
-        z_idx = self._slice_slider.value()
-        slc = extract_axial_slice(self._windowed_volume(), z_idx)
+
+        self._set_status("Detecting arch (geometric)… (a few seconds)")
+        QApplication.processEvents()
+
         try:
-            control = auto_detect_arch(slc, n_control=self._n_control_spin.value())
-            self.canvas.set_control_points(control)
-            self._set_status(
-                f"Auto-detect: {len(control)} points (rough). Refine by dragging, "
-                "or use 'Fit Arch from Clicks' for a cleaner result."
-            )
-        except ValueError as e:
-            QMessageBox.information(self, "Auto-detect", str(e))
+            roi_dir = Path(__file__).parent.parent / "ROI_targeting"
+            if str(roi_dir) not in sys.path:
+                sys.path.insert(0, str(roi_dir))
+            import altered_geometric_version as agv
+            import scipy.interpolate
+
+            # Pipeline works in (Z, Y, X) + raw HU; our volume is (X, Y, Z).
+            vol_zyx = np.ascontiguousarray(self._volume.transpose(2, 1, 0))
+            z_spacing = float(np.linalg.norm(self._affine[:3, 2]))
+
+            # Detect: coronal ROI → axial arch footprint → arch centreline spline
+            meip = agv.find_MeIPs(vol_zyx, axis="coronal", show=False)
+            roi = agv.find_coronal_roi(meip, volume=vol_zyx,
+                                       z_spacing_mm=z_spacing, show=False)
+            footprint, arch_mask = agv.find_arch_footprint(vol_zyx, roi, show=False)
+            # posterior extension in mm (resolution-independent) → px
+            pe_px = 10.0 / max(z_spacing, 1e-3)
+            tck, _Td, _region = agv.find_dental_arch(
+                arch_mask, posterior_extend=pe_px, background=footprint, show=False)
+
+            # Evaluate the spline and resample to N evenly-spaced control points.
+            u = np.linspace(0, 1, 600)
+            xs, ys = scipy.interpolate.splev(u, tck)   # x=col, y=row (axial voxel)
+            dense = np.column_stack([xs, ys])
+            control = resample_spline_to_n_points(dense, self._n_control_spin.value())
         except Exception as e:
-            QMessageBox.critical(self, "Auto-detect Error", str(e))
+            QMessageBox.critical(self, "Geometric Detection Error",
+                                 f"{type(e).__name__}: {e}")
+            self._set_status("Geometric arch detection failed.")
+            return
+
+        self.canvas.set_control_points(control)
+        self._set_status(
+            f"Geometric arch: {len(control)} control points. Drag to refine, "
+            "then Generate Panoramic."
+        )
 
     # ------------------------------------------------------------------
     # Editing helpers
