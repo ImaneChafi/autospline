@@ -59,8 +59,8 @@ text{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
 
 <rect x="440" y="346" width="152" height="80" rx="10" fill="#E1F5EE" stroke="#0F6E56"/>
 <text x="516" y="372" text-anchor="middle" class="th" fill="#085041">auto-detect</text>
-<text x="516" y="391" text-anchor="middle" class="ts" fill="#0F6E56">rough · no clicks</text>
-<text x="516" y="408" text-anchor="middle" class="ts" fill="#0F6E56">bright-blob fit</text>
+<text x="516" y="391" text-anchor="middle" class="ts" fill="#0F6E56">no clicks · no label</text>
+<text x="516" y="408" text-anchor="middle" class="ts" fill="#0F6E56">image-based arch</text>
 
 <rect x="214" y="448" width="13" height="13" rx="3" fill="#EEEDFE" stroke="#534AB7"/>
 <text x="233" y="458" class="ts">AI method</text>
