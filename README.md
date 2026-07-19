@@ -259,6 +259,19 @@ python3 cbct_arch_spline/dl/dl_arch_predictor.py \
     --out_fcsv prediction.fcsv
 ```
 
+**Running on a raw scan with no label.** This model requires a tooth/bone label
+volume (it uses it to locate the jaw, as an input channel, and to build the
+geometric baseline). ToothFairy2 ships with labels, but a brand-new CBCT won't
+have one. In that case the intended pipeline is two stages:
+
+```
+raw CBCT ──▶ tooth-segmentation model ──▶ label volume ──▶ our DL arch model ──▶ spline
+```
+
+i.e. first run a tooth/bone segmentation model (e.g. an nnU-Net trained on
+ToothFairy2) on the raw CBCT to produce the label volume, then feed the CBCT +
+that label into the AI Detection here.
+
 **Caveats:**
 - **Lower jaw is reliable; upper jaw is preliminary** — the model was trained on
   155 lower-jaw vs only 6 upper-jaw cases.
