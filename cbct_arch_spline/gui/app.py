@@ -365,15 +365,15 @@ class MainWindow(QMainWindow):
         file_group = QGroupBox("File")
         fg_layout = QVBoxLayout(file_group)
 
-        btn_load_cbct = QPushButton("Load CBCT (.nii.gz)")
+        btn_load_cbct = QPushButton("Load CBCT")
         btn_load_cbct.clicked.connect(self._load_cbct)
         fg_layout.addWidget(btn_load_cbct)
 
-        btn_load_fcsv = QPushButton("Load Annotation (.fcsv)")
+        btn_load_fcsv = QPushButton("Load Annotation")
         btn_load_fcsv.clicked.connect(self._load_fcsv)
         fg_layout.addWidget(btn_load_fcsv)
 
-        btn_save = QPushButton("Save Annotation (.fcsv)")
+        btn_save = QPushButton("Save Annotation")
         btn_save.clicked.connect(self._save_annotation)
         fg_layout.addWidget(btn_save)
         layout.addWidget(file_group)
@@ -414,7 +414,7 @@ class MainWindow(QMainWindow):
 
         ai_layout.addWidget(QLabel("Needs a tooth/bone label\nvolume (auto-found if named\nlike labelsTr/<case>.mha)"))
 
-        btn_load_label = QPushButton("Load Label (.mha)")
+        btn_load_label = QPushButton("Load Label")
         btn_load_label.clicked.connect(self._load_label)
         ai_layout.addWidget(btn_load_label)
         self._label_status = QLabel("Label: (auto)")
@@ -444,7 +444,7 @@ class MainWindow(QMainWindow):
         geo_group = QGroupBox("Geometric (no AI)")
         gg_layout = QVBoxLayout(geo_group)
 
-        gg_layout.addWidget(QLabel("1. Click ~6 points roughly\n   along the arch"))
+        gg_layout.addWidget(QLabel("Click ~6 points along the\narch, then Fit from Clicks"))
 
         gg_layout.addWidget(QLabel("Control points:"))
         self._n_control_spin = QSpinBox()
@@ -452,7 +452,7 @@ class MainWindow(QMainWindow):
         self._n_control_spin.setValue(24)
         gg_layout.addWidget(self._n_control_spin)
 
-        btn_fit_clicks = QPushButton("2. Fit Arch from Clicks")
+        btn_fit_clicks = QPushButton("Fit from Clicks")
         btn_fit_clicks.clicked.connect(self._fit_from_clicks)
         gg_layout.addWidget(btn_fit_clicks)
 
@@ -460,7 +460,7 @@ class MainWindow(QMainWindow):
         btn_snap.clicked.connect(self._snap_to_bright)
         gg_layout.addWidget(btn_snap)
 
-        btn_auto = QPushButton("Auto-detect Arch (geometric)")
+        btn_auto = QPushButton("Auto-detect Arch")
         btn_auto.clicked.connect(self._auto_detect)
         gg_layout.addWidget(btn_auto)
 
@@ -493,7 +493,7 @@ class MainWindow(QMainWindow):
         btn_pano.clicked.connect(self._generate_panoramic)
         pg_layout.addWidget(btn_pano)
 
-        btn_save_pano = QPushButton("Save Panoramic (.png)")
+        btn_save_pano = QPushButton("Save Panoramic")
         btn_save_pano.clicked.connect(self._save_panoramic)
         pg_layout.addWidget(btn_save_pano)
 
