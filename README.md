@@ -1,5 +1,11 @@
 # CBCT Dental Arch Spline Detector
 
+
+
+https://github.com/user-attachments/assets/cb856cb2-153b-493b-a50f-ef23588ba14d
+
+
+
 AI-assisted tool for detecting and annotating dental arch splines on CBCT (Cone Beam CT) axial slices.
 
 Inspired by margin line detection on 3D meshes, adapted for 2D CBCT imaging. A U-Net predicts a heatmap of control point locations; the user can then refine the result interactively in a GUI annotator.
