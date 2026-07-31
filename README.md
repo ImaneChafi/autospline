@@ -4,6 +4,20 @@ AI-assisted tool for detecting and annotating dental arch splines on CBCT (Cone 
 
 Inspired by margin line detection on 3D meshes, adapted for 2D CBCT imaging. A U-Net predicts a heatmap of control point locations; the user can then refine the result interactively in a GUI annotator.
 
+## 🎥 Video abstract
+
+[![AutoSpline — video abstract](docs/video_abstract_poster.png)](https://github.com/ImaneChafi/autospline/raw/main/video_abstract.mp4)
+
+**▶ Click the image above to play the video abstract.**
+
+<!--
+  Optional — for a video that PLAYS INLINE (embedded player) instead of on click:
+  open this README on github.com, click ✏️ edit, drag video_abstract.mp4 into the
+  editor here, and GitHub inserts a https://github.com/user-attachments/assets/…
+  link that renders as an inline player. Then replace the image line above with it.
+-->
+
+
 ## GUI feature pipeline
 
 ![CBCT arch annotator GUI pipeline](docs/gui_pipeline.png)
@@ -207,17 +221,21 @@ This works on every slice — including those with no clean tooth row — becaus
 *you* supply the anatomical prior with the clicks; the geometry just smooths and
 resamples them.
 
-There is also an **"Auto-detect Arch (geometric)"** button for a fully-automatic
-result with **no clicks and no label**. It runs the image-based arch detector in
-[`ROI_targeting/altered_geometric_version.py`](cbct_arch_spline/ROI_targeting/altered_geometric_version.py):
-it finds the jaw's coronal ROI from the enamel band, extracts the dental-arch
-footprint from the bone-window mean projection, skeletonises it to a centreline,
-and fits a smoothing B-spline — then resamples that spline to control points on
-the canvas. Drag to refine, then **Generate Panoramic**.
+There are also **two fully-automatic** buttons (no clicks, no label):
 
-The click-assisted helpers live in
-[`inference/geometric.py`](cbct_arch_spline/inference/geometric.py):
-`assisted_arch_from_clicks`, `snap_points_to_bright`.
+- **"Auto (contrast)"** — bright-blob detection on the *current axial slice*
+  ([`inference/geometric.py`](cbct_arch_spline/inference/geometric.py) →
+  `auto_detect_arch`). Fast, but only works when a clean tooth row is visible on
+  that slice.
+- **"Auto (ROI)"** — the image-based arch detector over the *whole volume*
+  ([`ROI_targeting/altered_geometric_version.py`](cbct_arch_spline/ROI_targeting/altered_geometric_version.py)):
+  finds the jaw's coronal ROI from the enamel band, extracts the dental-arch
+  footprint from the bone-window mean projection, skeletonises it to a
+  centreline, and fits a smoothing B-spline. More robust across slices/bite.
+
+Either way, drag to refine, then **Generate Panoramic**. The click-assisted
+helpers (`assisted_arch_from_clicks`, `snap_points_to_bright`) also live in
+`inference/geometric.py`.
 
 ---
 
@@ -286,6 +304,36 @@ that label into the AI Detection here.
 - The model works on the **whole jaw volume**, not a single slice — its arch is
   valid across all jaw slices, so the GUI keeps your current slice when loading
   the prediction (`keep_slice=True`).
+
+---
+
+## AI Assistant (local LLM via Ollama)
+
+The GUI's **AI Assistant** panel lets you drive the tool in plain English —
+e.g. *"make the panoramic brighter and sharper"*, *"extend the arch back"*,
+*"give me 30 control points"*, *"re-detect the arch"*. It runs a **local**
+model through [Ollama](https://github.com/ollama/ollama): **no API key, no cost,
+fully offline**, and the CBCT image never leaves your machine.
+
+**How it works.** Your request + the current state (number of control points,
+current panoramic settings) go to the local model, which returns a small JSON
+list of operations *chosen from a fixed, whitelisted vocabulary* — it can only
+adjust panoramic knobs (gamma/brightness, contrast/CLAHE, tone strength, trough
+depth, margins) and run existing spline actions (resample, smooth, re-order,
+clear, geometric/AI detect). It never runs arbitrary code, and every value is
+range-checked before being applied. The logic lives in
+[`llm/assistant.py`](cbct_arch_spline/llm/assistant.py).
+
+**One-time setup:**
+```bash
+brew install ollama       # or download from https://ollama.com
+ollama serve              # start the local server (keep running)
+ollama pull qwen2.5:7b    # ~5 GB; the default model
+```
+
+Then type a request in the **AI Assistant** box and press **Ask** (or Enter).
+If Ollama isn't running or the model isn't pulled, the panel tells you exactly
+what to run. The model is configurable via `DEFAULT_MODEL` in `llm/assistant.py`.
 
 ---
 

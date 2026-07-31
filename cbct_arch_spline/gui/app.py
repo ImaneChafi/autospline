@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QSlider, QLabel, QFileDialog, QStatusBar,
     QGroupBox, QSizePolicy, QMessageBox, QDoubleSpinBox, QSpinBox,
-    QCheckBox, QToolBar, QAction, QComboBox, QScrollArea,
+    QCheckBox, QToolBar, QAction, QComboBox, QScrollArea, QLineEdit,
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QKeySequence
@@ -320,6 +320,7 @@ class MainWindow(QMainWindow):
         self._nii_path: Optional[Path] = None
         self._label_path: Optional[Path] = None  # tooth/bone segmentation for DL model
         self._predictor = None  # loaded on demand
+        self._pano_params: dict = {}  # panoramic render overrides (set via AI assistant)
 
         self._build_ui()
         self._build_toolbar()
@@ -460,7 +461,13 @@ class MainWindow(QMainWindow):
         btn_snap.clicked.connect(self._snap_to_bright)
         gg_layout.addWidget(btn_snap)
 
-        btn_auto = QPushButton("Auto-detect Arch")
+        btn_auto_contrast = QPushButton("Auto (contrast)")
+        btn_auto_contrast.setToolTip("Bright-blob detection on the current slice")
+        btn_auto_contrast.clicked.connect(self._auto_detect_contrast)
+        gg_layout.addWidget(btn_auto_contrast)
+
+        btn_auto = QPushButton("Auto (ROI)")
+        btn_auto.setToolTip("ROI-targeting arch detection over the whole volume")
         btn_auto.clicked.connect(self._auto_detect)
         gg_layout.addWidget(btn_auto)
 
@@ -498,6 +505,27 @@ class MainWindow(QMainWindow):
         pg_layout.addWidget(btn_save_pano)
 
         layout.addWidget(pano_group)
+
+        # --- AI Assistant (local LLM via Ollama) ---
+        ai_asst_group = QGroupBox("AI Assistant")
+        aa_layout = QVBoxLayout(ai_asst_group)
+        aa_layout.addWidget(QLabel("Ask in plain English, e.g.\n\"brighter, extend arch back\""))
+
+        self._ai_input = QLineEdit()
+        self._ai_input.setPlaceholderText("Type a request…")
+        self._ai_input.returnPressed.connect(self._ask_ai)
+        aa_layout.addWidget(self._ai_input)
+
+        btn_ask = QPushButton("Ask")
+        btn_ask.clicked.connect(self._ask_ai)
+        aa_layout.addWidget(btn_ask)
+
+        self._ai_reply = QLabel("")
+        self._ai_reply.setWordWrap(True)
+        self._ai_reply.setStyleSheet("color: #555; font-size: 11px;")
+        aa_layout.addWidget(self._ai_reply)
+
+        layout.addWidget(ai_asst_group)
 
         # --- Info ---
         self._info_label = QLabel("")
@@ -697,11 +725,11 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
         try:
-            # ROI_targeting/alter_version.py uses bare imports, so add its dir.
+            # ROI_targeting/altered_geometric_version.py uses bare imports, so add its dir.
             roi_dir = Path(__file__).parent.parent / "ROI_targeting"
             if str(roi_dir) not in sys.path:
                 sys.path.insert(0, str(roi_dir))
-            import alter_version as av
+            import altered_geometric_version as av
 
             # The pipeline works in (Z, Y, X) order and raw HU; our volume is
             # (X, Y, Z), so transpose back. Control points are already axial
@@ -711,7 +739,7 @@ class MainWindow(QMainWindow):
 
             tck = av.manual_arch_tck(pts_px, coords="pixel")
             px, _roi, _tck = av.synthesize_panoramic_from_volume_manual(
-                vol_zyx, z_spacing, tck, show=False
+                vol_zyx, z_spacing, tck, show=False, **self._pano_params
             )
         except Exception as e:
             QMessageBox.critical(self, "Panoramic Error", f"{type(e).__name__}: {e}")
@@ -742,6 +770,79 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save Error", str(e))
             return
         self._set_status(f"Saved panoramic to {Path(path).name}")
+
+    # ------------------------------------------------------------------
+    # AI Assistant (local LLM via Ollama)
+    # ------------------------------------------------------------------
+
+    def _ask_ai(self) -> None:
+        instruction = self._ai_input.text().strip()
+        if not instruction:
+            return
+
+        from llm import assistant as llm
+
+        ok, msg = llm.check_ollama()
+        if not ok:
+            QMessageBox.warning(self, "AI Assistant unavailable", msg)
+            self._ai_reply.setText(msg)
+            return
+
+        state = {
+            "n_points": len(self.canvas.get_control_points()),
+            "has_pano": self.pano_canvas.get_image() is not None,
+            "pano_params": self._pano_params,
+        }
+        self._set_status("Asking the local model…")
+        self._ai_reply.setText("Thinking…")
+        QApplication.processEvents()
+
+        try:
+            result = llm.interpret(instruction, state)
+        except Exception as e:
+            QMessageBox.critical(self, "AI Assistant Error", str(e))
+            self._ai_reply.setText("Error — see dialog.")
+            return
+
+        self._apply_llm_operations(result["operations"])
+        reply = result.get("reply") or "Done."
+        self._ai_reply.setText(reply)
+        self._set_status(f"AI: {reply}")
+        self._ai_input.clear()
+
+    def _apply_llm_operations(self, operations: list) -> None:
+        """Execute the validated operations returned by the local model."""
+        pano_changed = False
+        for op in operations:
+            action = op.get("action")
+            if action == "set_pano_param":
+                self._pano_params[op["param"]] = op["value"]
+                pano_changed = True
+            elif action == "regenerate_panoramic":
+                pano_changed = True
+            elif action == "spline_resample":
+                pts = self.canvas.get_control_points()
+                if len(pts) >= 2:
+                    self.canvas.set_control_points(
+                        resample_spline_to_n_points(pts, op["n"]))
+            elif action == "spline_smooth":
+                pts = self.canvas.get_control_points()
+                if len(pts) >= 4:
+                    from inference.geometric import assisted_arch_from_clicks
+                    self.canvas.set_control_points(
+                        assisted_arch_from_clicks(pts, n_control=len(pts)))
+            elif action == "spline_reorder":
+                self._reorder_points()
+            elif action == "spline_clear":
+                self.canvas.clear_points()
+            elif action == "detect_geometric":
+                self._auto_detect()
+            elif action == "detect_ai":
+                self._run_dl_detection()
+
+        # Re-render the panoramic once if any pano setting changed and we have a spline
+        if pano_changed and len(self.canvas.get_control_points()) >= 4:
+            self._generate_panoramic()
 
     # ------------------------------------------------------------------
     # Slice navigation
@@ -950,6 +1051,31 @@ class MainWindow(QMainWindow):
         snapped = snap_points_to_bright(slc, pts, radius=6)
         self.canvas.set_control_points(snapped)
         self._set_status("Snapped control points to nearby bright tooth/bone.")
+
+    def _auto_detect_contrast(self) -> None:
+        """
+        Contrast-based geometric detection on the CURRENT axial slice
+        (bright-blob thresholding — inference/geometric.py::auto_detect_arch).
+        Fast, but only works when a clean tooth row is visible on the slice.
+        """
+        from inference.geometric import auto_detect_arch
+
+        if self._volume is None:
+            QMessageBox.warning(self, "No CBCT", "Load a CBCT volume first.")
+            return
+        z_idx = self._slice_slider.value()
+        slc = extract_axial_slice(self._windowed_volume(), z_idx)
+        try:
+            control = auto_detect_arch(slc, n_control=self._n_control_spin.value())
+            self.canvas.set_control_points(control)
+            self._set_status(
+                f"Contrast auto-detect: {len(control)} points on this slice. "
+                "Drag to refine, or try 'Auto (ROI)'."
+            )
+        except ValueError as e:
+            QMessageBox.information(self, "Auto (contrast)", str(e))
+        except Exception as e:
+            QMessageBox.critical(self, "Auto (contrast) Error", str(e))
 
     def _auto_detect(self) -> None:
         """

@@ -681,7 +681,6 @@ def segment_mandible_3d(volume, roi, bone_min=500, min_patch_size=50, show=True)
 
 def _enamel_arch_mask(sub_volume, z_spacing_mm, enamel_hu=1800, enamel_hu_max=5000,
                       frac=0.06, close_mm=4.0, max_close_mm=12.0, min_capture=0.90):
-                      frac=0.06, close_mm=4.0):
     """
     Arch footprint from the enamel signal alone, for whole-skull / closed-bite scans
     where the bone window fills the whole facial cross-section.

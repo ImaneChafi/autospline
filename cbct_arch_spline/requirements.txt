@@ -12,3 +12,5 @@ tqdm>=4.65.0
 pandas>=2.0.0
 opencv-python>=4.8.0
 SimpleITK>=2.3.0
+# AI Assistant talks to a local Ollama server using only the Python standard
+# library (urllib) — no extra pip package needed. Install Ollama separately.

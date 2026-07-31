@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Oversized raw video (291MB > GitHub 100MB limit) — upload the compressed mp4 via GitHub web UI instead
+video_abstract.mov
